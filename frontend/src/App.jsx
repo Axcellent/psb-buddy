@@ -43,17 +43,17 @@ const demoAnswer = {
   ]
 }
 
-const LogoMark = ({ small = false }) => {
-  <span className={`logo-mark${small ? "logo-mark-small" : ""}`} aria-hidden="true">
+const LogoMark = ({ small = false }) => (
+  <span className={`logo-mark${small ? " logo-mark-small" : ""}`} aria-hidden="true">
     <i />
     <b />
   </span>
-}
+)
 
 function MessageBubble({ message, onSelectSource })
 {
   const [copied, setCopied] = useState(false)
-  const [reaction, setReaction] = uuseState("")
+  const [reaction, setReaction] = useState("")
   const isAssistant = message.role === "assistant"
 
   const copyText = async () => {
@@ -88,7 +88,7 @@ function MessageBubble({ message, onSelectSource })
             </button>
           ) }
         </div>
-        <div className={`bubble ${isAssistant ? "assistant-bubble" : "user0bubble"}`}>
+        <div className={`bubble ${isAssistant ? "assistant-bubble" : "user-bubble"}`}>
           {isAssistant && (
             <span className="answer-status">
               <Check size={12} />
@@ -140,13 +140,13 @@ function MessageBubble({ message, onSelectSource })
   )
 }
 
-export function App()
+export default function App()
 {
   const [chats, setChats] = useState(initialChats)
   const [activeChat, setActiveChat] = useState("vacation")
   const [conversations, setConversations] = useState({ vacation: [welcomeMessage] })
-  const [input, setInput] = useState('')
-  const [search, setSearch] = useState('')
+  const [input, setInput] = useState("")
+  const [search, setSearch] = useState("")
   const [selectedSource, setSelectedSource] = useState(null)
   const [sourcesOpen, setSourcesOpen] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -158,14 +158,14 @@ export function App()
 
   const messages = conversations[activeChat] ?? [welcomeMessage]
   const currentChat = chats.find((chat) => chat.id === activeChat)
-  const source = useMemo(() => messages.flatMap((messages) => messages.source ?? []), [messages])
+  const sources = useMemo(() => messages.flatMap((messages) => messages.sources ?? []), [messages])
   const filteredChats = chats.filter((chat) => chat.title.toLowerCase().includes(search.toLowerCase()))
   
   const createChat = () => {
     const id = `chat-${Date.now()}`
 
     setChats((prev) => [
-      { id, titile: "Новый диалог", date: "сейчас" },
+      { id, title: "Новый диалог", date: "сейчас" },
       ...prev
     ])
 
@@ -193,6 +193,339 @@ export function App()
       minute: "2-digit"
     }).format(new Date())
 
-    
+    const userMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      time, 
+      text
+    }
+
+    setConversations((prev) => ({
+      ...prev,
+      [activeChat]: [...(prev[activeChat] ?? [welcomeMessage]), userMessage]
+    }))
+
+    setChats((prev) =>
+      prev.map((chat) =>
+        chat.id === activeChat && chat.title === "Новый диалог"
+          ? {
+              ...chat,
+              title: text.length > 30 ? `${text.slice(0, 30)}...` : text,
+              date: "сейчас",
+            }
+          : chat
+      )
+    )
+
+    setInput("")
+    setIsTyping(true)
+
+    window.setTimeout(() => {
+      const reply = {
+        id: `reply-${Date.now()}`,
+        role: "assistant",
+        time,
+        ...demoAnswer
+      }
+
+      setConversations((prev) => ({
+        ...prev,
+        [activeChat]: [...(prev[activeChat] ?? [welcomeMessage]), reply],
+      }))
+
+      setIsTyping(false)
+
+      window.setTimeout(() => {
+        scrollRef.current?.scrollTo({
+          top: scrollRef.current.scrollHeight,
+          behavior: "smooth"
+        })
+      }, 60)
+    }, 900)
   }
+
+  const activateChat = (id) => {
+    setActiveChat(id)
+    setSidebarOpen(false)
+    setSelectedSource(null)
+  
+    if (!conversations[id]) 
+    {
+      setConversations((prev) => ({
+        ...prev,
+        [id]: [welcomeMessage],
+      }))
+    }
+  }
+
+  return (
+    <main className="workspace">
+      { sidebarOpen && (
+        <button
+          className="mobile-scrim"
+          aria-label="Закрыть меню"
+          onClick={() => setSidebarOpen(false)}
+        />
+      ) }
+      <aside className={`sidebar panel ${sidebarOpen ? "sidebar-open" : ""}`}>
+        <div className="brand-lockup">
+          <LogoMark />
+          <div>
+            <strong>DOCWISE</strong>
+            <span>AI ASSISTANT</span>
+          </div>
+          <button
+            className="icon-button mobile-close"
+            aria-label="Закрыть меню"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <button className="new-chat-button" onClick={createChat}>
+          <Plus size={18} strokeWidth={2.2} />
+          <span>Новый чат</span>
+          <kbd><Command size={10} /> K</kbd>
+        </button>
+        <div className="history-heading">
+          <span>История диалогов</span>
+          <span className="count-pill">{ chats.length }</span>
+        </div>
+        <label className="chat-search">
+          <Search size={14} />
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Найти диалог"
+          />
+        </label>
+        <nav className="chat-list" aria-label="История диалогов">
+          { filteredChats.map((chat) => (
+            <button
+              key={chat.id}
+              onClick={() => activateChat(chat.id)}
+              className={`chat-item ${activeChat === chat.id ? "active" : ""}`}
+            >
+              <MessageCircle size={16} />
+              <span className="chat-title">{chat.title}</span>
+              <time>{chat.date}</time>
+            </button>
+          )) }
+          { filteredChats.length === 0 && (
+            <p className="empty-search">Диалоги не найдены</p>
+          ) }
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="workspace-user">
+            <div className="user-avatar user-avatar-small">М</div>
+            <div>
+              <strong>Моя команда</strong>
+              <span>Рабочее пространство</span>
+            </div>
+            <MoreHorizontal size={18} />
+          </div>
+          <button className="help-link">
+            <BookOpen size={15} />
+            Как это работает?
+            <ArrowUpRight size={13} />
+          </button>
+        </div>
+      </aside>
+      <section className="main-column">
+      <header className="topbar panel">
+        <button
+          className="icon-button mobile-menu"
+          aria-label="Открыть меню"
+          onClick={() => setSidebarOpen(true)}
+        >
+          <Menu size={19} />
+        </button>
+        <div className="page-title">
+          <span className="eyebrow">
+            Интеллектуальный поиск по документам
+          </span>
+          <h1>
+            Юридический ассистент <span className="beta-tag">BETA</span>
+          </h1>
+        </div>
+        <div className="topbar-actions">
+          <button
+            className={`demo-toggle ${demoMode ? "is-on" : ""}`}
+            onClick={() => setDemoMode((prev) => !prev)}
+          >
+            <span className="status-dot" />
+            {demoMode ? "Демо-режим" : "Рабочий режим"}
+            <ChevronDown size={13} />
+          </button>
+          <div className="top-brand">
+            <LogoMark small />
+            <span>DW</span>
+          </div>
+        </div>
+      </header>
+        <section className="chat-panel panel">
+          <div className="chat-header">
+            <div className="chat-header-icon"><Sparkles size={18} /></div>
+            <div className="chat-header-copy">
+              <strong>{ currentChat?.title ?? "Диалог с ассистентом" }</strong>
+              <span>Ответы с опорой на базу знаний</span>
+            </div>
+            <div className="secure-session">
+              <ShieldCheck size={15} />
+              <span>Защищённая сессия</span>
+            </div>
+            <button
+              className="icon-button source-toggle"
+              onClick={() => setSourcesOpen(!sourcesOpen)}
+              title={sourcesOpen ? "Скрыть источники" : "Показать источники"}
+            >
+              {sourcesOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
+            </button>
+          </div>
+          <div className="conversation" ref={scrollRef}>
+            { messages.map((message) => (
+              <MessageBubble
+                key={message.id}
+                message={message}
+                onSelectSource={setSelectedSource}
+              />
+            )) }
+            { isTyping && (
+              <div className="typing-row">
+                <div className="avatar assistant-avatar"><LogoMark small /></div>
+                <div className="typing-bubble">
+                  <span />
+                  <span />
+                  <span />
+                  <small>Ассистент готовит ответ</small>
+                </div>
+              </div>
+            ) }
+          </div>
+          <div className="composer-area">
+            { messages.length === 1 && (
+              <div className="suggestions">
+                <span>Попробуйте спросить</span>
+                <button onClick={() => setInput("Какие документы нужны для оформления отпуска?")}>
+                  Оформление отпуска
+                </button>
+                <button onClick={() => setInput("На что обратить внимание в договоре?")}>
+                  Проверка договора
+                </button>  
+              </div>
+            ) }
+            <form className="composer" onSubmit={sendMessage}>
+              <button
+                type="button"
+                className="attach-button"
+                title="ПРикрепить документ"
+                onClick={() => alert("Загрузка документов будет доступна в рабочем режиме")}
+              >
+                <Paperclip size={17} />
+              </button>
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) 
+                  {
+                    event.preventDefault()
+                    sendMessage()
+                  }
+                }}
+                placeholder="Задайте вопрос по документам…"
+                rows={1}
+              />
+              <button
+                className={`send-button ${input.trim() ? "ready" : ""}`}
+                type="submit"
+                disabled={!input.trim() || isTyping}
+                aria-label="Отправить сообщение"
+              >
+                <Send size={16} />
+              </button>
+            </form>
+            <div className="composer-note">
+              <ShieldCheck size={12} />
+              Ответы формируются по вашим документам. Проверяйте важные выводы.
+            </div>
+          </div>
+        </section>
+      </section>
+      { sourcesOpen && (
+        <aside className="sources-panel panel">
+          <div className="sources-heading">
+            <div>
+              <span className="eyebrow">Проверяемость</span>
+              <h2>Источники ответа</h2>
+            </div>
+            <span className="source-total">{String(sources.length).padStart(2, "0")}</span>
+          </div>
+          <div className="source-info">
+            <div className="source-info-icon"><ShieldCheck size={17} /></div>
+            <p>Каждый фрагмент связан с конкретным документом и пунктом.</p>
+          </div>
+          { selectedSource ? (
+            <div className="source-detail">
+              <button className="source-back" onClick={() => setSelectedSource(null)}>
+                Все источники
+              </button>
+              <div className="source-file-icon"><FileText size={23} /></div>
+              <span className="source-type">Источник ответа</span>
+              <h3>{selectedSource.title}</h3>
+              <div className="source-detail-row">
+                <span>Раздел</span>
+                <strong>{selectedSource.section}</strong>
+              </div>
+              <div className="source-detail-row">
+                <span>Расположение</span>
+                <strong>{selectedSource.page}</strong>
+              </div>
+              <button
+                className="open-document"
+                onClick={() => alert("Просмотр документа появится после подключения хранилища.")}
+              >
+                Открыть документ
+                <ArrowUpRight size={14} />
+              </button>
+            </div>
+          ) : sources.length ? (
+            <div className="source-list">
+              { sources.map((source, index) => (
+                <button
+                key={`${source.title}-${index}`}
+                className="source-card"
+                onClick={() => setSelectedSource(source)}
+              >
+                <div className="source-card-icon"><FileText size={17} /></div>
+                <div>
+                  <strong>{source.title}</strong>
+                  <span>{source.section} * {source.page}</span>
+                </div>
+                <ArrowUpRight size={14} />
+              </button>
+              )) }
+            </div>
+          ) : (
+            <div className="sources-empty">
+              <div className="empty-file-icon"><FileText size={24} /></div>
+              <strong>Пока нет источников</strong>
+              <p>
+                После ответа ассистента здесь появятся документы, пункты и цитаты,
+                на которых основан вывод.
+              </p>
+            </div>
+          ) }
+          <div className="trust-note">
+            <div className="trust-icon"><Sparkles size={16} /></div>
+            <div>
+              <strong>Контроль достоверности</strong>
+              <p>Ассистент не додумывает документы и подтверждает выводы фрагментами.</p>
+            </div>
+          </div>
+        </aside>
+      ) }
+    </main>
+  )
 }
