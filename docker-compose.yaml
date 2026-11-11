@@ -1,0 +1,17 @@
+services:
+  seaweedfs-s3:
+    image: chrislusf/seaweedfs:latest
+    container_name: seaweedfs-s3
+    ports:
+      - "8333:8333"
+    volumes:
+      - ./scripts/seaweedfs/s3-config.json:/etc/seaweedfs/s3-config.json:ro
+      - seaweedfs-data:/data
+    command: >
+      server
+      -s3
+      -s3.config=/etc/seaweedfs/s3-config.json
+    restart: unless-stopped
+
+volumes:
+  seaweedfs-data:
