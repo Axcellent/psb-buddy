@@ -315,73 +315,9 @@ export default function App()
             <p className="empty-search">Диалоги не найдены</p>
           ) }
         </nav>
-        <div className="sidebar-bottom">
-          <div className="workspace-user">
-            <div className="user-avatar user-avatar-small">М</div>
-            <div>
-              <strong>Моя команда</strong>
-              <span>Рабочее пространство</span>
-            </div>
-            <MoreHorizontal size={18} />
-          </div>
-          <button className="help-link">
-            <BookOpen size={15} />
-            Как это работает?
-            <ArrowUpRight size={13} />
-          </button>
-        </div>
       </aside>
       <section className="main-column">
-      <header className="topbar panel">
-        <button
-          className="icon-button mobile-menu"
-          aria-label="Открыть меню"
-          onClick={() => setSidebarOpen(true)}
-        >
-          <Menu size={19} />
-        </button>
-        <div className="page-title">
-          <span className="eyebrow">
-            Интеллектуальный поиск по документам
-          </span>
-          <h1>
-            Юридический ассистент <span className="beta-tag">BETA</span>
-          </h1>
-        </div>
-        <div className="topbar-actions">
-          <button
-            className={`demo-toggle ${demoMode ? "is-on" : ""}`}
-            onClick={() => setDemoMode((prev) => !prev)}
-          >
-            <span className="status-dot" />
-            {demoMode ? "Демо-режим" : "Рабочий режим"}
-            <ChevronDown size={13} />
-          </button>
-          <div className="top-brand">
-            <LogoMark small />
-            <span>DW</span>
-          </div>
-        </div>
-      </header>
         <section className="chat-panel panel">
-          <div className="chat-header">
-            <div className="chat-header-icon"><Sparkles size={18} /></div>
-            <div className="chat-header-copy">
-              <strong>{ currentChat?.title ?? "Диалог с ассистентом" }</strong>
-              <span>Ответы с опорой на базу знаний</span>
-            </div>
-            <div className="secure-session">
-              <ShieldCheck size={15} />
-              <span>Защищённая сессия</span>
-            </div>
-            <button
-              className="icon-button source-toggle"
-              onClick={() => setSourcesOpen(!sourcesOpen)}
-              title={sourcesOpen ? "Скрыть источники" : "Показать источники"}
-            >
-              {sourcesOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
-            </button>
-          </div>
           <div className="conversation" ref={scrollRef}>
             { messages.map((message) => (
               <MessageBubble
@@ -415,14 +351,6 @@ export default function App()
               </div>
             ) }
             <form className="composer" onSubmit={sendMessage}>
-              <button
-                type="button"
-                className="attach-button"
-                title="ПРикрепить документ"
-                onClick={() => alert("Загрузка документов будет доступна в рабочем режиме")}
-              >
-                <Paperclip size={17} />
-              </button>
               <textarea
                 ref={inputRef}
                 value={input}
@@ -446,10 +374,6 @@ export default function App()
                 <Send size={16} />
               </button>
             </form>
-            <div className="composer-note">
-              <ShieldCheck size={12} />
-              Ответы формируются по вашим документам. Проверяйте важные выводы.
-            </div>
           </div>
         </section>
       </section>
@@ -457,14 +381,9 @@ export default function App()
         <aside className="sources-panel panel">
           <div className="sources-heading">
             <div>
-              <span className="eyebrow">Проверяемость</span>
               <h2>Источники ответа</h2>
             </div>
             <span className="source-total">{String(sources.length).padStart(2, "0")}</span>
-          </div>
-          <div className="source-info">
-            <div className="source-info-icon"><ShieldCheck size={17} /></div>
-            <p>Каждый фрагмент связан с конкретным документом и пунктом.</p>
           </div>
           { selectedSource ? (
             <div className="source-detail">
@@ -517,13 +436,6 @@ export default function App()
               </p>
             </div>
           ) }
-          <div className="trust-note">
-            <div className="trust-icon"><Sparkles size={16} /></div>
-            <div>
-              <strong>Контроль достоверности</strong>
-              <p>Ассистент не додумывает документы и подтверждает выводы фрагментами.</p>
-            </div>
-          </div>
         </aside>
       ) }
     </main>
