@@ -267,7 +267,7 @@ async def chat_ws(websocket: WebSocket) -> None:
         request = ChatRequest.model_validate(await websocket.receive_json())
     except WebSocketDisconnect:
         return
-    except ValidationError, ValueError, TypeError:
+    except (ValidationError, ValueError, TypeError):
         await websocket.send_json({"type": "error", "message": "Invalid chat request"})
         await websocket.close(code=1008)
         return
@@ -325,6 +325,6 @@ async def chat_ws(websocket: WebSocket) -> None:
             {"type": "error", "message": "Model request timed out"}
         )
         await websocket.close(code=1011)
-    except httpx.HTTPError, ValueError, KeyError, TypeError, IndexError:
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError):
         await websocket.send_json({"type": "error", "message": "Model request failed"})
         await websocket.close(code=1011)
