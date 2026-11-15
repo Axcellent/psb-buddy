@@ -7,7 +7,7 @@ import httpx
 import config
 import kb
 import prompts
-from llm_client import chat
+from llm_client import LLMError, chat, log
 from retrieval import Retriever
 
 
@@ -50,5 +50,12 @@ class Assistant:
 
     def answer(self, client: httpx.Client, question: str) -> Answer:
         messages, company_docs, company_chunks, law_chunks = self.context(client, question)
-        text = prompts.clean_answer(chat(client, messages))
+        draft = chat(client, messages)
+        if config.SELF_CHECK:
+            review = [*messages, {"role": "assistant", "content": draft}, {"role": "user", "content": prompts.SELF_CHECK_PROMPT}]
+            try:
+                draft = chat(client, review)
+            except LLMError as exc:
+                log(f"self-check skipped: {exc}")
+        text = prompts.clean_answer(draft)
         return Answer(text, company_docs, company_chunks, law_chunks)
