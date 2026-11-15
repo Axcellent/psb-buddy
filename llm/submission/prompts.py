@@ -142,7 +142,7 @@ def build_messages(
         parts.append("\n".join(lines))
     if warnings:
         parts.append(
-            "Проверка редакций (учти, если эти нормы нужны для ответа):\n"
+            "Проверки по базе знаний (учти те, что относятся к вопросу):\n"
             + "\n".join(f"- {warning}" for warning in warnings)
         )
     parts.append(f"Вопрос пользователя:\n{turns[-1][1]}")

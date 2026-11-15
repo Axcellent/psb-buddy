@@ -7,7 +7,14 @@ import httpx
 import config
 import kb
 import prompts
-from editions import edition_warnings
+from editions import (
+    VAT_QUESTION_RE,
+    correction_prompt,
+    edition_finding,
+    template_answer,
+    vat_conflicts,
+    violation,
+)
 from llm_client import LLMError, chat, log
 from retrieval import Retriever
 
@@ -30,6 +37,7 @@ class Assistant:
         self.retriever = Retriever(documents, use_company=not self.company_fulltext)
         self.clauses = Retriever(documents, use_company=True)
         self.catalog = kb.catalog(documents)
+        self.vat_notes = vat_conflicts(documents)
 
     @classmethod
     def from_archive(cls, path) -> "Assistant":
@@ -40,6 +48,9 @@ class Assistant:
             self.retriever.build_embeddings(client)
 
     def context(self, client: httpx.Client | None, question: str):
+        return self._prepare(client, question)[:4]
+
+    def _prepare(self, client: httpx.Client | None, question: str):
         turns = prompts.parse_dialog(question)
         found = self.retriever.search(client, prompts.retrieval_query(turns))
         law_chunks = self._with_full_articles([c for c in found if self.docs_by_id[c.doc_id].kind == "law"])
@@ -63,17 +74,26 @@ class Assistant:
         for chunk, score in scored:
             if self.docs_by_id[chunk.doc_id].kind == "law":
                 weights[chunk.doc_id] = weights.get(chunk.doc_id, 0.0) + score
+        dialog = " ".join(text for _, text in turns)
+        findings = [
+            finding
+            for doc in self.documents
+            if doc.kind == "law" and (finding := edition_finding(dialog, doc)) is not None
+        ]
         warnings: list[str] = []
         if weights and closest and self.docs_by_id[closest[0].doc_id].kind == "law":
             best = max(weights.values())
             leading = sorted((d for d in weights if weights[d] >= 0.6 * best), key=lambda d: -weights[d])
-            dialog = " ".join(text for _, text in turns)
             for doc_id in leading[: config.EDITION_DOCUMENTS]:
-                warnings.extend(edition_warnings(dialog, self.docs_by_id[doc_id]))
+                for finding in findings:
+                    if finding.doc.doc_id == doc_id:
+                        warnings.extend(finding.lines())
+        if self.vat_notes and VAT_QUESTION_RE.search(dialog):
+            warnings.extend(self.vat_notes)
         messages = prompts.build_messages(
             turns, company_docs, company_chunks, law_chunks, self.docs_by_id, self.catalog, hints, warnings
         )
-        return messages, company_docs, company_chunks, law_chunks
+        return messages, company_docs, company_chunks, law_chunks, findings
 
     def _with_full_articles(self, chunks: list[kb.Chunk]) -> list[kb.Chunk]:
         by_doc: dict[str, list[kb.Chunk]] = {}
@@ -102,7 +122,7 @@ class Assistant:
         return prompts.clean_answer("По базе знаний: " + " ".join(parts))
 
     def answer(self, client: httpx.Client, question: str) -> Answer:
-        messages, company_docs, company_chunks, law_chunks = self.context(client, question)
+        messages, company_docs, company_chunks, law_chunks, findings = self._prepare(client, question)
         draft = chat(client, messages)
         if config.SELF_CHECK:
             review = [*messages, {"role": "assistant", "content": draft}, {"role": "user", "content": prompts.SELF_CHECK_PROMPT}]
@@ -110,5 +130,27 @@ class Assistant:
                 draft = chat(client, review)
             except LLMError as exc:
                 log(f"self-check skipped: {exc}")
+        draft = self._check_editions(client, messages, draft, findings)
         text = prompts.clean_answer(draft)
         return Answer(text, company_docs, company_chunks, law_chunks)
+
+    def _check_editions(self, client: httpx.Client, messages: list[dict[str, str]], draft: str, findings) -> str:
+        for finding in findings:
+            hits = violation(draft, finding)
+            if not hits:
+                continue
+            log(f"edition check: answer applies {finding.name} to an earlier period, correcting")
+            review = [
+                *messages,
+                {"role": "assistant", "content": draft},
+                {"role": "user", "content": correction_prompt(finding, hits)},
+            ]
+            try:
+                fixed = chat(client, review)
+            except LLMError as exc:
+                log(f"edition correction failed: {exc}")
+                fixed = ""
+            if fixed and not violation(fixed, finding):
+                return fixed
+            return template_answer(finding, hits)
+        return draft
