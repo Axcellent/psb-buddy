@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -103,6 +103,58 @@ def upstream_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
 
 
+MAX_ATTEMPTS = 3
+RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+RETRY_BASE_DELAY = 1.0
+RETRY_MAX_DELAY = 8.0
+
+
+def retry_delay(attempt: int, response: httpx.Response | None = None) -> float:
+    if response is not None:
+        try:
+            retry_after = float(response.headers.get("retry-after", ""))
+            return min(RETRY_MAX_DELAY, max(0.0, retry_after))
+        except ValueError:
+            pass
+    return min(RETRY_MAX_DELAY, RETRY_BASE_DELAY * 2**attempt)
+
+
+async def send_chat_completion(
+    payload: dict[str, Any], *, stream: bool
+) -> httpx.Response:
+    """POST /chat/completions, retrying transient failures a bounded number of times.
+
+    The caller must check the status of the returned response and, when
+    ``stream`` is true, close it.
+    """
+    client: httpx.AsyncClient = app.state.client
+    for attempt in range(MAX_ATTEMPTS):
+        is_last = attempt == MAX_ATTEMPTS - 1
+        request = client.build_request(
+            "POST",
+            f"{settings.base_url}/chat/completions",
+            headers=upstream_headers(),
+            json=payload,
+        )
+        try:
+            response = await client.send(request, stream=stream)
+        except httpx.ReadTimeout:
+            # The model already had the full read timeout; do not wait again.
+            raise
+        except httpx.TransportError:
+            if is_last:
+                raise
+            await asyncio.sleep(retry_delay(attempt))
+            continue
+        if response.status_code in RETRY_STATUSES and not is_last:
+            delay = retry_delay(attempt, response)
+            await response.aclose()
+            await asyncio.sleep(delay)
+            continue
+        return response
+    raise AssertionError("unreachable")
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -131,10 +183,8 @@ async def ready() -> dict[str, str]:
 async def chat(request: ChatRequest) -> ChatResponse:
     async with app.state.semaphore:
         try:
-            response = await app.state.client.post(
-                f"{settings.base_url}/chat/completions",
-                headers=upstream_headers(),
-                json=upstream_payload(request, stream=False),
+            response = await send_chat_completion(
+                upstream_payload(request, stream=False), stream=False
             )
             response.raise_for_status()
             body = response.json()
@@ -171,11 +221,10 @@ async def chat_ws(websocket: WebSocket) -> None:
     try:
         async with (
             app.state.semaphore,
-            app.state.client.stream(
-                "POST",
-                f"{settings.base_url}/chat/completions",
-                headers=upstream_headers(),
-                json=upstream_payload(request, stream=True),
+            aclosing(
+                await send_chat_completion(
+                    upstream_payload(request, stream=True), stream=True
+                )
             ) as response,
         ):
             response.raise_for_status()
