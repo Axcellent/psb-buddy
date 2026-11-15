@@ -6,6 +6,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import config
 from assistant import Assistant
 from llm_client import LLMError, log, make_client

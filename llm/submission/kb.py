@@ -27,6 +27,14 @@ EDITORIAL_RE = re.compile(
     r"|Информация об изменениях|ГАРАНТ)"
 )
 
+CHANGE_RE = re.compile(
+    r"^((Статья|Пункт|Подпункт|Часть|Абзац|Примечани\w*|Наименование)\b.*?"
+    r"(изменен\w*|дополнен\w*|утратил\w*|введен\w*).*?\sс\s+\d{1,2}\s+\S+\s+\d{4}\s*г\.?)",
+    re.IGNORECASE,
+)
+WHOLE_ARTICLE_CHANGE_RE = re.compile(r"^Статья\s+[\d.]+\s+изменен", re.IGNORECASE)
+NOTE_SUFFIX_RE = re.compile(r"\s\[Редакция:[^\]]*\]$")
+
 AI_ADDRESS_RE = re.compile(
     r"(\bИИ\b|\bAI\b|\bLLM\b|нейросет|языков\w*\s+модел|чат-?бот|system prompt|системн\w*\s+промпт)",
     re.IGNORECASE,
@@ -86,6 +94,8 @@ class Document:
     short_name: str = ""
     source: str = ""
     topic: str = ""
+    exported: str = ""
+    changes: list[str] = field(default_factory=list)
     articles: list[str] = field(default_factory=list)
     chunks: list[Chunk] = field(default_factory=list)
     outlines: dict[str, Chunk] = field(default_factory=dict)
@@ -178,20 +188,32 @@ def _law_short_name(source: str, fallback: str) -> str:
     return fallback
 
 
-def _law_paragraphs(text: str) -> tuple[str, list[str]]:
-    source, paragraphs = "", []
+def _law_paragraphs(text: str) -> tuple[dict[str, str], list[str], list[str]]:
+    header: dict[str, str] = {}
+    paragraphs: list[str] = []
+    changes: list[str] = []
+    pending: list[str] = []
     for raw_line in text.split("\n"):
         line = raw_line.replace("\xa0", " ").strip()
         if not line:
             continue
         if line.startswith(HEADER_PREFIXES):
-            if line.startswith("Источник:"):
-                source = line[len("Источник:"):].strip()
+            key, _, value = line.partition(":")
+            header[key] = value.strip()
             continue
         if EDITORIAL_RE.search(line):
+            change = CHANGE_RE.match(line)
+            if change:
+                note = change.group(1)
+                pending.append(note)
+                if WHOLE_ARTICLE_CHANGE_RE.match(note):
+                    changes.append(note)
             continue
+        if pending:
+            line = f"{line} [Редакция: {'; '.join(pending)}]"
+            pending = []
         paragraphs.append(line)
-    return source, paragraphs
+    return header, paragraphs, changes
 
 
 def _split_long(text: str) -> list[str]:
@@ -253,7 +275,7 @@ def _chunk_law(doc: Document, paragraphs: list[str]) -> None:
             continue
         base = f"{doc.short_name}, ст. {article}"
         context = ""
-        if NOTES_RE.match(paragraph):
+        if NOTES_RE.match(NOTE_SUFFIX_RE.sub("", paragraph)):
             in_notes = True
             point = sub = None
             label = f"{base}, примечания"
@@ -275,7 +297,8 @@ def _chunk_law(doc: Document, paragraphs: list[str]) -> None:
             if prev_end == "." or part == 0:
                 part += 1
             label = f"{base}, ч. {part}"
-        prev_end = paragraph.rstrip()[-1:] if paragraph.rstrip() else "."
+        bare = NOTE_SUFFIX_RE.sub("", paragraph).rstrip()
+        prev_end = bare[-1:] if bare else "."
         if groups and groups[-1][0] == label and groups[-1][1] == context:
             groups[-1][2].append(paragraph)
         else:
@@ -326,7 +349,9 @@ def _build_outlines(doc: Document, paragraphs: list[str]) -> None:
             continue
         point = POINT_RE.match(paragraph)
         if article and point and point.group(1).isdigit():
-            points.append(_first_sentence(paragraph))
+            note = NOTE_SUFFIX_RE.search(paragraph)
+            sentence = _first_sentence(NOTE_SUFFIX_RE.sub("", paragraph))
+            points.append(f"{sentence}{note.group(0)}" if note else sentence)
     flush()
 
 
@@ -360,9 +385,12 @@ def load_documents(path) -> list[Document]:
         total_dropped += dropped
         doc_id = _doc_id(name)
         if _is_law(name, clean):
-            source, paragraphs = _law_paragraphs(clean)
+            header, paragraphs, changes = _law_paragraphs(clean)
+            source = header.get("Источник", "")
             short = _law_short_name(source, _company_title(name))
             doc = Document(doc_id, "law", source or short, "\n".join(paragraphs), short, source)
+            doc.exported = header.get("Дата выгрузки", "")
+            doc.changes = changes
             _chunk_law(doc, paragraphs)
             if short == "НК РФ" and doc.articles:
                 doc.topic = nk_topic(doc.articles[0])
