@@ -16,7 +16,10 @@ THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 class LLMError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None, detail: str = "") -> None:
+        super().__init__(f"{message}: {detail}" if detail else message)
+        self.status = status
+        self.detail = detail
 
 
 def log(message: str) -> None:
@@ -60,7 +63,8 @@ def post_json(client: httpx.Client, path: str, key: str, payload: dict[str, Any]
             time.sleep(_delay(attempt, response))
             continue
         if response.status_code >= 400:
-            raise LLMError(f"{path}: HTTP {response.status_code}")
+            detail = " ".join(response.text.split())[:200]
+            raise LLMError(f"{path}: HTTP {response.status_code}", response.status_code, detail)
         try:
             return response.json()
         except ValueError as exc:
@@ -83,13 +87,19 @@ def _answer_text(message: dict[str, Any]) -> str:
 
 def chat(client: httpx.Client, messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
     budget = max_tokens or config.MAX_TOKENS
-    for _ in range(2):
-        body = post_json(client, "/chat/completions", config.API_KEY, {
-            "model": config.LLM_MODEL,
-            "messages": messages,
-            "temperature": config.TEMPERATURE,
-            "max_tokens": budget,
-        })
+    for attempt in range(2):
+        try:
+            body = post_json(client, "/chat/completions", config.API_KEY, {
+                "model": config.LLM_MODEL,
+                "messages": messages,
+                "temperature": config.TEMPERATURE,
+                "max_tokens": budget,
+            })
+        except LLMError as exc:
+            if attempt == 0 and exc.status == 400 and "channel" in exc.detail.lower():
+                budget = min(8192, budget * 2)
+                continue
+            raise
         try:
             choice = body["choices"][0]
             text = _answer_text(choice["message"])
