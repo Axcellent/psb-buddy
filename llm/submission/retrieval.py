@@ -82,8 +82,12 @@ def _article_of(chunk: Chunk) -> str | None:
     return match.group(1) if match else None
 
 
+EDITION_NOTE_RE = re.compile(r"\[Редакция:[^\]]*\]")
+
+
 def _index_text(chunk: Chunk, doc: Document) -> str:
-    return f"{doc.short_name or doc.title} {doc.topic} {chunk.label} {chunk.context} {chunk.text}"
+    text = EDITION_NOTE_RE.sub(" ", f"{chunk.context} {chunk.text}")
+    return f"{doc.short_name or doc.title} {doc.topic} {chunk.label} {text}"
 
 
 class Retriever:
@@ -133,10 +137,13 @@ class Retriever:
         ranked.extend(i for i in head if i not in ranked)
         return ranked + tail
 
-    def top(self, query: str, limit: int) -> list[Chunk]:
+    def scored(self, query: str, limit: int) -> list[tuple[Chunk, float]]:
         scores = self.bm25.scores(tokens(expand_query(query)))
         order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        return [self.chunks[i] for i in order[:limit] if scores[i] > 0]
+        return [(self.chunks[i], scores[i]) for i in order[:limit] if scores[i] > 0]
+
+    def top(self, query: str, limit: int) -> list[Chunk]:
+        return [chunk for chunk, _ in self.scored(query, limit)]
 
     def search(self, client: httpx.Client | None, query: str) -> list[Chunk]:
         if not self.chunks:

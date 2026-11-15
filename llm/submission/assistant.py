@@ -7,6 +7,7 @@ import httpx
 import config
 import kb
 import prompts
+from editions import edition_warnings
 from llm_client import LLMError, chat, log
 from retrieval import Retriever
 
@@ -44,8 +45,33 @@ class Assistant:
         law_chunks = self._with_full_articles([c for c in found if self.docs_by_id[c.doc_id].kind == "law"])
         company_chunks = [c for c in found if self.docs_by_id[c.doc_id].kind == "company"]
         company_docs = self.company if self.company_fulltext else []
+        query = prompts.retrieval_query(turns)
+        scored = self.clauses.scored(query, config.HINT_CANDIDATES)
+        closest = [chunk for chunk, _ in scored]
+        specific = [(chunk, score) for chunk, score in scored if "вводная часть" not in chunk.label]
+        threshold = specific[0][1] * config.HINT_MIN_RATIO if specific else 0.0
+        hints: list[kb.Chunk] = []
+        per_doc: dict[str, int] = {}
+        for chunk, score in specific:
+            if score < threshold or per_doc.get(chunk.doc_id, 0) >= config.HINT_PER_DOCUMENT:
+                continue
+            per_doc[chunk.doc_id] = per_doc.get(chunk.doc_id, 0) + 1
+            hints.append(chunk)
+            if len(hints) >= config.HINT_LIMIT:
+                break
+        weights: dict[str, float] = {}
+        for chunk, score in scored:
+            if self.docs_by_id[chunk.doc_id].kind == "law":
+                weights[chunk.doc_id] = weights.get(chunk.doc_id, 0.0) + score
+        warnings: list[str] = []
+        if weights and closest and self.docs_by_id[closest[0].doc_id].kind == "law":
+            best = max(weights.values())
+            leading = sorted((d for d in weights if weights[d] >= 0.6 * best), key=lambda d: -weights[d])
+            dialog = " ".join(text for _, text in turns)
+            for doc_id in leading[: config.EDITION_DOCUMENTS]:
+                warnings.extend(edition_warnings(dialog, self.docs_by_id[doc_id]))
         messages = prompts.build_messages(
-            turns, company_docs, company_chunks, law_chunks, self.docs_by_id, self.catalog
+            turns, company_docs, company_chunks, law_chunks, self.docs_by_id, self.catalog, hints, warnings
         )
         return messages, company_docs, company_chunks, law_chunks
 

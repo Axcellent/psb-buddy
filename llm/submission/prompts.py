@@ -101,6 +101,8 @@ def build_messages(
     law_chunks: list[Chunk],
     docs_by_id: dict[str, Document],
     catalog: str,
+    hints: list[Chunk] | None = None,
+    warnings: list[str] | None = None,
 ) -> list[dict[str, str]]:
     parts = ["<база_знаний>"]
     for doc in company_docs:
@@ -129,6 +131,20 @@ def build_messages(
             f"{'Пользователь' if role == 'user' else 'Ассистент'}: {text}" for role, text in turns[:-1]
         )
         parts.append(f"<история_диалога>\n{_escape(history)}\n</история_диалога>")
+    if hints:
+        lines = [
+            "Положения, наиболее близкие к вопросу по словам. Это подсказка поиска: "
+            "проверь их по полному тексту выше, нужные положения могут быть и вне этого списка."
+        ]
+        for chunk in hints:
+            text = " ".join(chunk.text.split())[: config.HINT_CHARS]
+            lines.append(f"- {chunk.label}: {text}")
+        parts.append("\n".join(lines))
+    if warnings:
+        parts.append(
+            "Проверка редакций (учти, если эти нормы нужны для ответа):\n"
+            + "\n".join(f"- {warning}" for warning in warnings)
+        )
     parts.append(f"Вопрос пользователя:\n{turns[-1][1]}")
     parts.append(REMINDER)
     return [
