@@ -41,7 +41,7 @@ def find_knowledge_base() -> Path | None:
     if explicit:
         path = Path(explicit)
         return path if path.is_file() else None
-    for root in (HERE / "data", HERE.parent / "data", Path.cwd() / "data"):
+    for root in (Path(os.getenv("DATA_DIR", "data")), HERE / "data", HERE.parent / "data", Path.cwd() / "data"):
         for name in KB_NAMES:
             path = root / name
             if path.is_file():
@@ -64,7 +64,7 @@ class RagService:
     def load(self) -> None:
         self.kb_path = find_knowledge_base()
         if self.kb_path is None:
-            self.error = "Knowledge base archive not found: set KB_PATH or put knowledge-base.zip into ./data"
+            self.error = "Knowledge base archive not found in DATA_DIR"
             log(self.error)
             return
         try:
