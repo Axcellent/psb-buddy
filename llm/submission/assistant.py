@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -15,7 +15,8 @@ from editions import (
     vat_conflicts,
     violation,
 )
-from llm_client import LLMError, chat, log
+from grounding import is_grounded, is_plain_refusal
+from llm_client import LLMError, chat, is_too_long, log
 from retrieval import Retriever
 
 
@@ -25,6 +26,7 @@ class Answer:
     company_docs: list[kb.Document]
     company_chunks: list[kb.Chunk]
     law_chunks: list[kb.Chunk]
+    hints: list[kb.Chunk] = field(default_factory=list)
 
 
 class Assistant:
@@ -38,6 +40,8 @@ class Assistant:
         self.clauses = Retriever(documents, use_company=True)
         self.catalog = kb.catalog(documents)
         self.vat_notes = vat_conflicts(documents)
+        self.compact = False
+        self.overflows = 0
 
     @classmethod
     def from_archive(cls, path) -> "Assistant":
@@ -50,7 +54,7 @@ class Assistant:
     def context(self, client: httpx.Client | None, question: str):
         return self._prepare(client, question)[:4]
 
-    def _prepare(self, client: httpx.Client | None, question: str):
+    def _prepare(self, client: httpx.Client | None, question: str, compact: bool = False):
         turns = prompts.parse_dialog(question)
         found = self.retriever.search(client, prompts.retrieval_query(turns))
         law_chunks = self._with_full_articles([c for c in found if self.docs_by_id[c.doc_id].kind == "law"])
@@ -90,10 +94,24 @@ class Assistant:
                         warnings.extend(finding.lines())
         if self.vat_notes and VAT_QUESTION_RE.search(dialog):
             warnings.extend(self.vat_notes)
+        if compact:
+            totals: dict[str, float] = {}
+            for chunk, score in scored:
+                if self.docs_by_id[chunk.doc_id].kind == "company":
+                    totals[chunk.doc_id] = totals.get(chunk.doc_id, 0.0) + score
+            keep = sorted(totals, key=lambda doc_id: -totals[doc_id])[: config.COMPACT_COMPANY_DOCUMENTS]
+            company_docs = [doc for doc in company_docs if doc.doc_id in keep]
+            law_chunks = [c for c in found if self.docs_by_id[c.doc_id].kind == "law"][: config.COMPACT_LAW_CHUNKS]
+            hints = hints[: config.COMPACT_HINTS]
         messages = prompts.build_messages(
-            turns, company_docs, company_chunks, law_chunks, self.docs_by_id, self.catalog, hints, warnings
+            turns, company_docs, company_chunks, law_chunks, self.docs_by_id, self.catalog, hints, warnings, compact
         )
-        return messages, company_docs, company_chunks, law_chunks, findings
+        support: list[kb.Chunk] = []
+        for chunk in [*hints, *found, *closest[: config.RECHECK_CLOSEST]]:
+            if chunk not in support and "вводная часть" not in chunk.label:
+                support.append(chunk)
+        support = support[: config.RECHECK_LIMIT]
+        return messages, company_docs, company_chunks, law_chunks, findings, hints, turns, support
 
     def _with_full_articles(self, chunks: list[kb.Chunk]) -> list[kb.Chunk]:
         by_doc: dict[str, list[kb.Chunk]] = {}
@@ -122,8 +140,19 @@ class Assistant:
         return prompts.clean_answer("По базе знаний: " + " ".join(parts))
 
     def answer(self, client: httpx.Client, question: str) -> Answer:
-        messages, company_docs, company_chunks, law_chunks, findings = self._prepare(client, question)
-        draft = chat(client, messages)
+        prepared = self._prepare(client, question, self.compact)
+        try:
+            draft = chat(client, prepared[0])
+        except LLMError as exc:
+            if self.compact or not is_too_long(exc):
+                raise
+            self.overflows += 1
+            if self.overflows >= 2:
+                self.compact = True
+            log(f"request too long for the model, retrying with a compact context: {exc}")
+            prepared = self._prepare(client, question, True)
+            draft = chat(client, prepared[0])
+        messages, company_docs, company_chunks, law_chunks, findings, hints, turns, support = prepared
         if config.SELF_CHECK:
             review = [*messages, {"role": "assistant", "content": draft}, {"role": "user", "content": prompts.SELF_CHECK_PROMPT}]
             try:
@@ -131,8 +160,25 @@ class Assistant:
             except LLMError as exc:
                 log(f"self-check skipped: {exc}")
         draft = self._check_editions(client, messages, draft, findings)
+        draft = self._recheck_refusal(client, turns, draft, support)
         text = prompts.clean_answer(draft)
-        return Answer(text, company_docs, company_chunks, law_chunks)
+        return Answer(text, company_docs, company_chunks, law_chunks, hints)
+
+    def _recheck_refusal(self, client: httpx.Client, turns, draft: str, hints: list[kb.Chunk]) -> str:
+        if not hints or not is_plain_refusal(draft):
+            return draft
+        try:
+            second = chat(client, prompts.build_recheck(turns, hints, self.docs_by_id))
+        except LLMError as exc:
+            log(f"refusal recheck skipped: {exc}")
+            return draft
+        if second.strip(" .!»«\"").upper() == "НЕТ" or is_plain_refusal(second):
+            return draft
+        if not is_grounded(second, hints, " ".join(text for _, text in turns)):
+            log("refusal recheck: new answer is not grounded in the fragments, keeping the refusal")
+            return draft
+        log("refusal recheck: answer found in the closest fragments")
+        return second
 
     def _check_editions(self, client: httpx.Client, messages: list[dict[str, str]], draft: str, findings) -> str:
         for finding in findings:

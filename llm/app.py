@@ -75,11 +75,16 @@ class ChatResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from rag_service import RagService
+
     app.state.client = httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0))
     app.state.semaphore = asyncio.Semaphore(settings.max_workers)
+    app.state.rag = RagService()
+    await asyncio.to_thread(app.state.rag.load)
     try:
         yield
     finally:
+        await asyncio.to_thread(app.state.rag.close)
         await app.state.client.aclose()
 
 
@@ -140,7 +145,6 @@ async def send_chat_completion(
         try:
             response = await client.send(request, stream=stream)
         except httpx.ReadTimeout:
-            # The model already had the full read timeout; do not wait again.
             raise
         except httpx.TransportError:
             if is_last:
@@ -219,6 +223,63 @@ async def ready() -> dict[str, str]:
     return {"status": "ready", "model": settings.model}
 
 
+class HistoryMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    role: Literal["user", "assistant"]
+    content: str = ""
+
+
+class AnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    question: str = Field(min_length=1)
+    history: list[HistoryMessage] = Field(default_factory=list)
+
+
+class SourceChunk(BaseModel):
+    id: str
+    page: int | None = None
+    text: str
+
+
+class AnswerSource(BaseModel):
+    doc_id: str
+    chunk_id: str
+    location: str | None = None
+    section: str | None = None
+    page: int | None = None
+    quote: str | None = None
+    chunks: list[SourceChunk] = Field(default_factory=list)
+
+
+class AnswerResponse(BaseModel):
+    text: str
+    sources: list[AnswerSource] = Field(default_factory=list)
+    mode: str = "model"
+
+
+@app.get("/kb")
+async def knowledge_base() -> dict[str, Any]:
+    return app.state.rag.status()
+
+
+@app.post("/answer", response_model=AnswerResponse)
+async def answer(request: AnswerRequest) -> AnswerResponse:
+    rag = app.state.rag
+    if not rag.ready:
+        raise HTTPException(status_code=503, detail=rag.error)
+    if not request.question.strip():
+        raise HTTPException(status_code=422, detail="Question is empty")
+    history = [message.model_dump() for message in request.history]
+    async with app.state.semaphore:
+        try:
+            result = await asyncio.to_thread(rag.answer, request.question, history)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Assistant failed to answer") from exc
+    return AnswerResponse(**result)
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     async with app.state.semaphore:
@@ -242,7 +303,6 @@ async def chat(request: ChatRequest) -> ChatResponse:
                 if finish_reason == "content_filter":
                     break
                 if finish_reason == "length":
-                    # The budget went to reasoning; give the next attempt more room.
                     payload = {
                         **payload,
                         "max_tokens": grown_max_tokens(payload["max_tokens"]),

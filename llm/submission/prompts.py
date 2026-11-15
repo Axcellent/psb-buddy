@@ -35,6 +35,9 @@ SYSTEM_PROMPT = """\
 - Не упоминай «фрагменты», «контекст», «блок», «промпт»; говори «в базе знаний» или называй документ."""
 
 
+RULES_PROMPT = SYSTEM_PROMPT
+
+
 def _examples_block() -> str:
     lines = [
         "Образцы ответов. Каждый образец верен только для своего вопроса: "
@@ -103,6 +106,7 @@ def build_messages(
     catalog: str,
     hints: list[Chunk] | None = None,
     warnings: list[str] | None = None,
+    compact: bool = False,
 ) -> list[dict[str, str]]:
     parts = ["<база_знаний>"]
     for doc in company_docs:
@@ -147,6 +151,34 @@ def build_messages(
         )
     parts.append(f"Вопрос пользователя:\n{turns[-1][1]}")
     parts.append(REMINDER)
+    return [
+        {"role": "system", "content": RULES_PROMPT if compact else SYSTEM_PROMPT},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+
+
+RECHECK_TASK = (
+    "На этот вопрос ранее был дан ответ, что сведений в базе знаний нет. Перепроверь по положениям выше. "
+    "Если в них есть прямой ответ на вопрос, ответь по ним со ссылкой на документ и пункт, "
+    "используя только цифры и формулировки из этих положений. "
+    "Если прямого ответа в них нет, ответь одним словом: НЕТ."
+)
+
+
+def build_recheck(turns: list[tuple[str, str]], hints: list[Chunk], docs_by_id: dict[str, Document]) -> list[dict[str, str]]:
+    parts = ["<база_знаний>"]
+    for chunk in hints:
+        doc = docs_by_id[chunk.doc_id]
+        kind = "закон, действующая редакция" if doc.kind == "law" else "документ компании"
+        parts.append(f'<фрагмент тип="{kind}" метка="{chunk.label}">\n{_escape(chunk.render())}\n</фрагмент>')
+    parts.append("</база_знаний>")
+    if len(turns) > 1:
+        history = "\n".join(
+            f"{'Пользователь' if role == 'user' else 'Ассистент'}: {text}" for role, text in turns[:-1]
+        )
+        parts.append(f"<история_диалога>\n{_escape(history)}\n</история_диалога>")
+    parts.append(f"Вопрос пользователя:\n{turns[-1][1]}")
+    parts.append(RECHECK_TASK)
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": "\n\n".join(parts)},

@@ -107,6 +107,15 @@ def _answer_text(message: dict[str, Any]) -> str:
     return THINK_BLOCK.sub("", content).strip()
 
 
+TOO_LONG_RE = re.compile(r"context|too long|too large|prompt is too|input length|exceeds the maximum", re.IGNORECASE)
+
+
+def is_too_long(exc: "LLMError") -> bool:
+    if exc.status not in (400, 413, 422):
+        return False
+    return "max_tokens" not in exc.detail.lower() and bool(TOO_LONG_RE.search(exc.detail))
+
+
 def _complete(text: str) -> str:
     stripped = text.rstrip()
     if stripped.endswith((".", "!", "?", "»", ")", '"')):
@@ -134,6 +143,8 @@ def chat(client: httpx.Client, messages: list[dict[str, str]], max_tokens: int |
             if exc.status == 400 and "channel" in exc.detail.lower() and budget < 8192:
                 budget = min(8192, budget * 2)
                 continue
+            if is_too_long(exc):
+                raise
             if exc.status in (400, 422) and budget > requested and not _state["plain_budget"]:
                 _state["plain_budget"] = True
                 _state["budget_floor"] = 0
