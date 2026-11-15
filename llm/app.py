@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -155,6 +156,41 @@ async def send_chat_completion(
     raise AssertionError("unreachable")
 
 
+EMPTY_ANSWER_ATTEMPTS = 2
+MAX_TOKENS_GROWTH_LIMIT = 8192
+THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+class EmptyAnswerError(ValueError):
+    """The model replied successfully but produced no answer text."""
+
+    def __init__(self, finish_reason: str | None, *, has_reasoning: bool) -> None:
+        if has_reasoning:
+            detail = "Model spent its output on reasoning and returned no answer"
+        else:
+            detail = "Model returned an empty answer"
+        super().__init__(f"{detail} (finish_reason={finish_reason or 'unknown'})")
+
+
+def extract_answer(message: dict[str, Any]) -> str:
+    """Return the answer text of a chat message, or "" when there is none."""
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    if not isinstance(content, str):
+        return ""
+    return THINK_BLOCK.sub("", content).strip()
+
+
+def grown_max_tokens(current: int) -> int:
+    doubled = current * 2
+    return doubled if doubled <= MAX_TOKENS_GROWTH_LIMIT else current
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -183,21 +219,35 @@ async def ready() -> dict[str, str]:
 async def chat(request: ChatRequest) -> ChatResponse:
     async with app.state.semaphore:
         try:
-            response = await send_chat_completion(
-                upstream_payload(request, stream=False), stream=False
+            payload = upstream_payload(request, stream=False)
+            for _ in range(EMPTY_ANSWER_ATTEMPTS):
+                response = await send_chat_completion(payload, stream=False)
+                response.raise_for_status()
+                body = response.json()
+                choice = body["choices"][0]
+                message = choice["message"]
+                finish_reason = choice.get("finish_reason")
+                answer = extract_answer(message)
+                if answer:
+                    return ChatResponse(
+                        answer=answer,
+                        model=body.get("model", settings.model),
+                        finish_reason=finish_reason,
+                        usage=body.get("usage"),
+                    )
+                if finish_reason == "content_filter":
+                    break
+                if finish_reason == "length":
+                    # The budget went to reasoning; give the next attempt more room.
+                    payload = {
+                        **payload,
+                        "max_tokens": grown_max_tokens(payload["max_tokens"]),
+                    }
+            raise EmptyAnswerError(
+                finish_reason, has_reasoning=bool(message.get("reasoning_content"))
             )
-            response.raise_for_status()
-            body = response.json()
-            choice = body["choices"][0]
-            answer = choice["message"]["content"]
-            if not isinstance(answer, str) or not answer.strip():
-                raise ValueError("Empty model answer")
-            return ChatResponse(
-                answer=answer,
-                model=body.get("model", settings.model),
-                finish_reason=choice.get("finish_reason"),
-                usage=body.get("usage"),
-            )
+        except EmptyAnswerError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         except httpx.TimeoutException as exc:
             raise HTTPException(
                 status_code=504, detail="Model request timed out"
@@ -231,6 +281,7 @@ async def chat_ws(websocket: WebSocket) -> None:
             await websocket.send_json({"type": "start", "model": settings.model})
             finish_reason = None
             received_content = False
+            received_reasoning = False
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
                     continue
@@ -246,12 +297,17 @@ async def chat_ws(websocket: WebSocket) -> None:
                     if isinstance(content, str) and content:
                         received_content = True
                         await websocket.send_json({"type": "delta", "content": content})
+                    if delta.get("reasoning_content"):
+                        received_reasoning = True
                     finish_reason = choice.get("finish_reason") or finish_reason
             if not received_content:
-                raise ValueError("Empty model stream")
+                raise EmptyAnswerError(finish_reason, has_reasoning=received_reasoning)
             await websocket.send_json({"type": "done", "finish_reason": finish_reason})
     except WebSocketDisconnect:
         return
+    except EmptyAnswerError as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close(code=1011)
     except httpx.TimeoutException:
         await websocket.send_json(
             {"type": "error", "message": "Model request timed out"}
