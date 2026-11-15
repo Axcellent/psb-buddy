@@ -116,7 +116,7 @@ class Retriever:
         log(f"embeddings ready: {matrix.shape[0]} fragments")
 
     def _rerank(self, client: httpx.Client | None, query: str, ordered: list[int]) -> list[int]:
-        if client is None or not self.rerank_enabled or len(ordered) < 2:
+        if client is None or not config.USE_RERANKER or not self.rerank_enabled or len(ordered) < 2:
             return ordered
         head, tail = ordered[: config.RERANK_CANDIDATES], ordered[config.RERANK_CANDIDATES:]
         documents = [
@@ -133,6 +133,11 @@ class Retriever:
         ranked.extend(i for i in head if i not in ranked)
         return ranked + tail
 
+    def top(self, query: str, limit: int) -> list[Chunk]:
+        scores = self.bm25.scores(tokens(expand_query(query)))
+        order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+        return [self.chunks[i] for i in order[:limit] if scores[i] > 0]
+
     def search(self, client: httpx.Client | None, query: str) -> list[Chunk]:
         if not self.chunks:
             return []
@@ -146,7 +151,8 @@ class Retriever:
                 dense = self.vectors @ q
                 rankings.append(list(np.argsort(-dense)))
             except (LLMError, httpx.HTTPError) as exc:
-                log(f"query embedding failed, BM25 only: {exc}")
+                self.vectors = None
+                log(f"query embedding failed, BM25 only from now on: {exc}")
         fused: dict[int, float] = {}
         for ranking in rankings:
             for rank, index in enumerate(ranking[:60]):

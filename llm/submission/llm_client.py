@@ -10,7 +10,7 @@ import httpx
 import config
 
 RETRY_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
-MAX_ATTEMPTS = 4
+MAX_ATTEMPTS = 3
 MAX_RETRY_DELAY = 10.0
 THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
 
@@ -34,6 +34,18 @@ def make_client() -> httpx.Client:
     )
 
 
+_state = {"deadline": None, "budget_floor": 0}
+
+
+def set_deadline(timestamp: float | None) -> None:
+    _state["deadline"] = timestamp
+
+
+def time_left() -> float:
+    deadline = _state["deadline"]
+    return float("inf") if deadline is None else deadline - time.monotonic()
+
+
 def _delay(attempt: int, response: httpx.Response | None) -> float:
     if response is not None:
         try:
@@ -50,17 +62,21 @@ def post_json(client: httpx.Client, path: str, key: str, payload: dict[str, Any]
     last_error = "no attempt"
     for attempt in range(MAX_ATTEMPTS):
         is_last = attempt == MAX_ATTEMPTS - 1
+        remaining = time_left()
+        if remaining < 2:
+            raise LLMError(f"{path}: out of time")
+        timeout = httpx.Timeout(min(config.REQUEST_TIMEOUT_SECONDS, remaining), connect=min(10.0, remaining))
         try:
-            response = client.post(config.API_BASE + path, headers=headers, json=payload)
+            response = client.post(config.API_BASE + path, headers=headers, json=payload, timeout=timeout)
         except httpx.TransportError as exc:
             last_error = type(exc).__name__
             if is_last:
                 break
-            time.sleep(_delay(attempt, None))
+            time.sleep(min(_delay(attempt, None), max(0.0, time_left() - 2)))
             continue
         if response.status_code in RETRY_STATUSES and not is_last:
             last_error = f"HTTP {response.status_code}"
-            time.sleep(_delay(attempt, response))
+            time.sleep(min(_delay(attempt, response), max(0.0, time_left() - 2)))
             continue
         if response.status_code >= 400:
             detail = " ".join(response.text.split())[:200]
@@ -86,7 +102,7 @@ def _answer_text(message: dict[str, Any]) -> str:
 
 
 def chat(client: httpx.Client, messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
-    budget = max_tokens or config.MAX_TOKENS
+    budget = max(max_tokens or config.MAX_TOKENS, _state["budget_floor"])
     for attempt in range(2):
         try:
             body = post_json(client, "/chat/completions", config.API_KEY, {
@@ -106,6 +122,8 @@ def chat(client: httpx.Client, messages: list[dict[str, str]], max_tokens: int |
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError("unexpected chat response shape") from exc
         if text:
+            if attempt and budget > _state["budget_floor"]:
+                _state["budget_floor"] = budget
             return text
         if choice.get("finish_reason") == "content_filter":
             break
