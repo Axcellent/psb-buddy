@@ -15,7 +15,8 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
 
-    seaweedfs_url: str = "http://localhost:8333"
+    # The storage adapter uses the Filer HTTP API, not the signed S3 API.
+    seaweedfs_url: str = "http://localhost:8888"
     seaweedfs_directory: str = "documents"
     seaweedfs_timeout_seconds: float = 20.0
 

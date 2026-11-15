@@ -1,0 +1,12 @@
+[project]
+name = "llm"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi==0.143.2",
+    "httpx==0.28.1",
+    "pydantic==2.14.2",
+    "python-dotenv==1.1.1",
+    "uvicorn==0.54.0",
+    "websockets==17.4",
+]
