@@ -1,5 +1,14 @@
-import { useMemo, useRef, useState } from "react"
-import { Plus, MessageCircle, Search, PanelRightClose, PanelRightOpen, FileText, ShieldCheck, Sparkles, Send, Paperclip, ChevronDown, MoreHorizontal, Copy, ThumbsUp, ThumbsDown, Check, Clock3, X, Command, Menu, ArrowUpRight, BookOpen } from "lucide-react"
+import { useMemo, useRef, useEffect, useState } from "react"
+import { Document, Page, pdfjs} from "react-pdf"
+import { MessageCircle, Search, ChevronLeft, ChevronRight, Minus, Plus, X, FileText, Send, Copy, ThumbsUp, ThumbsDown, Check, Command, ArrowUpRight } from "lucide-react"
+
+import "react-pdf/dist/Page/AnnotationLayer.css"
+import "react-pdf/dist/Page/TextLayer.css"
+
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  "pdfjs-dist/build/pdf.worker.min.mjs",
+  import.meta.url,
+).toString()
 
 const initialChats = [
   { 
@@ -30,24 +39,74 @@ const welcomeMessage = {
 const demoAnswer = {
   text: "Для оформления ежегодного отпуска обычно нужно проверить график отпусков и подать заявление, если требуется согласование или изменение запланированных дат. Работодатель должен уведомить сотрудника о начале отпуска не позднее чем за две недели.\n\nПроверьте локальный порядок согласования в вашей организации: он может предусматривать дополнительные шаги.",
   sources: [
-    {
-      title: "Правила внутреннего трудового распорядка.pdf",
-      section: "Раздел 6. Время отдыха",
-      page: "стр. 12",
+  {
+    id: "rules-vacation",
+    title: "Правила внутреннего трудового распорядка.pdf",
+    section: "Раздел 6. Время отдыха",
+    page: 12,
+    pdfUrl: "/document/rules.pdf",
+    quote:
+      "Ежегодный оплачиваемый отпуск предоставляется в соответствии " +
+      "с утверждённым графиком отпусков. При изменении запланированных " +
+      "дат сотрудник направляет заявление на согласование.",
+    chunks: [
+      {
+        id: "rules-1",
+        page: 12,
+        text:
+          "Ежегодный оплачиваемый отпуск предоставляется в соответствии " +
+          "с утверждённым графиком отпусков. При изменении запланированных " +
+          "дат сотрудник направляет заявление на согласование."
+      },
+      {
+        id: "rules-2",
+        page: 12,
+        text:
+          "В заявлении сотрудник указывает предполагаемые даты " +
+          "и продолжительность отпуска. Заявление передаётся " +
+          "на согласование в установленном порядке."
+      },
+      {
+        id: "rules-3",
+        page: 13,
+        text:
+          "После согласования заявления ответственное подразделение " +
+          "оформляет необходимые документы."
+      },
+    ],
+      chunkId: "rules-1"
     },
     {
+      id: "schedule-vacation",
       title: "График отпусков 2026.xlsx",
       section: "Лист «Сотрудники»",
-      page: "строка 48",
+      page: null,
+      location: "Строка 48",
+      quote:
+        "Демонстрационная запись графика: даты отпуска сотрудника " +
+        "согласованы с руководителем.",
+      chunks: [
+        {
+          id: "schedule-1",
+          page: null,
+          text:
+            "Демонстрационная запись графика: даты отпуска сотрудника " +
+            "согласованы с руководителем."
+        },
+      ],
+      chunkId: "schedule-1"
     }
   ]
 }
 
 const LogoMark = ({ small = false }) => (
-  <span className={`logo-mark${small ? " logo-mark-small" : ""}`} aria-hidden="true">
-    <i />
-    <b />
-  </span>
+  <img
+    src="/psb.svg"
+    alt="ПСБ"
+    className={`logo-mark${small ? " logo-mark-small" : ""}`}
+    width={small ? 24 : 32}
+    height={small ? 24 : 32}
+  />
 )
 
 function MessageBubble({ message, onSelectSource })
@@ -140,6 +199,247 @@ function MessageBubble({ message, onSelectSource })
   )
 }
 
+function PdfReader({ source, onClose }) 
+{
+  const [numPages, setNumPages] = useState(0)
+  const [pageNumber, setPageNumber] = useState(1)
+  const [scale, setScale] = useState(1)
+  const [containerWidth, setContainerWidth] = useState(600)
+  const [pageError, setPageError] = useState(false)
+
+  const bodyRef = useRef(null)
+  const closeRef = useRef(null)
+
+  useEffect(() => {
+    const previousFocus = document.activeElement
+    const previousOverflow = document.body.style.overflow
+
+    document.body.style.overflow = "hidden"
+    closeRef.current?.focus()
+
+    const element = bodyRef.current
+
+    const observer = new ResizeObserver(([entry]) => {
+      setContainerWidth(Math.max(100, Math.floor(entry.contentRect.width)))
+    })
+
+    if (element) 
+      observer.observe(element)
+
+    return () => {
+      observer.disconnect()
+      document.body.style.overflow = previousOverflow
+      previousFocus?.focus?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    bodyRef.current?.scrollTo({
+      top: 0,
+      left: 0,
+    })
+
+    setPageError(false)
+  }, [pageNumber])
+
+  const handleLoadSuccess = ({ numPages: count }) => {
+    setNumPages(count)
+
+    const requestedPage = Number(source.page)
+    const initialPage = Number.isInteger(requestedPage) ? requestedPage : 1
+
+    setPageNumber(Math.min(Math.max(initialPage, 1), count))
+  }
+
+  const handleKeyDown = (event) => {
+    if (event.key === "Escape") 
+    {
+      onClose()
+      return
+    }
+
+    if (event.key !== "Tab") return
+
+    const controls = Array.from(
+      event.currentTarget.querySelectorAll(
+        "button:not(:disabled), input:not(:disabled), a[href]",
+      ),
+    ).filter((element) => element.getClientRects().length > 0)
+
+    const first = controls[0]
+    const last = controls[controls.length - 1]
+
+    if (event.shiftKey && document.activeElement === first) 
+    {
+      event.preventDefault()
+      last?.focus()
+    } else if (!event.shiftKey && document.activeElement === last) 
+    {
+      event.preventDefault()
+      first?.focus()
+    }
+  }
+
+  const pageWidth = Math.min(containerWidth, 780)
+
+  return (
+    <div
+      className="pdf-backdrop"
+      onClick={(event) => {
+        if (event.target === event.currentTarget)
+          onClose()
+      }}
+    >
+      <section
+        className="pdf-reader"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pdf-reader-title"
+        onKeyDown={handleKeyDown}
+      >
+        <header className="pdf-reader-header">
+          <div className="pdf-reader-title">
+            <span>Просмотр документа</span>
+            <h2 id="pdf-reader-title">{source.title}</h2>
+          </div>
+          <button
+            ref={closeRef}
+            type="button"
+            className="icon-button"
+            aria-label="Закрыть документ"
+            onClick={onClose}
+          >
+            <X size={20} />
+          </button>
+        </header>
+        <div className="pdf-toolbar">
+          <div className="pdf-control-group">
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Предыдущая страница"
+              disabled={!numPages || pageNumber <= 1}
+              onClick={() => setPageNumber((prev) => prev - 1)}
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <span className="pdf-page-label" aria-live="polite">
+              { numPages ? `${pageNumber} / ${numPages}` : "- / -" }
+            </span>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Следующая страница"
+              disabled={!numPages || pageNumber >= numPages}
+              onClick={() => setPageNumber((prev) => prev + 1)}
+            >
+              <ChevronRight size={18} />
+            </button>
+          </div>
+          <div className="pdf-control-group">
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Уменьшить масштаб"
+              disabled={scale <= 0.5}
+              onClick={() =>
+                setScale((prev) =>
+                  Math.max(0.5, Number((prev - 0.25).toFixed(2))),
+                )
+              }
+            >
+              <Minus size={17} />
+            </button>
+            <button
+              type="button"
+              className="pdf-zoom-reset"
+              title="Сбросить масштаб"
+              onClick={() => setScale(1)}
+            >
+              { Math.round(scale * 100) }%
+            </button>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Увеличить масштаб"
+              disabled={scale >= 2}
+              onClick={() =>
+                setScale((prev) =>
+                  Math.min(2, Number((prev + 0.25).toFixed(2))),
+                )
+              }
+            >
+              <Plus size={17} />
+            </button>
+          </div>
+        </div>
+        <div className="pdf-reader-body" ref={bodyRef}>
+          <Document
+            file={source.pdfUrl}
+            onLoadSuccess={handleLoadSuccess}
+            onLoadError={(error) => {
+              setNumPages(0)
+              console.error("Ошибка загрузки PDF:", error)
+            }}
+            loading={
+              <p className="pdf-status" role="status">
+                Загрузка документа…
+              </p>
+            }
+            error={
+              <div className="pdf-status" role="alert">
+                <strong>Не удалось открыть PDF.</strong>
+                <p>
+                  Проверьте адрес документа и наличие файла
+                  в папке public/documents.
+                </p>
+              </div>
+            }
+            noData={
+              <p className="pdf-status">
+                Адрес документа не указан.
+              </p>
+            }
+          >
+            { numPages > 0 && (
+              <Page
+                key={pageNumber}
+                pageNumber={pageNumber}
+                width={pageWidth}
+                scale={scale}
+                renderTextLayer
+                renderAnnotationLayer
+                onRenderError={() => setPageError(true)}
+                loading={
+                  <p className="pdf-status" role="status">
+                    Загрузка страницы…
+                  </p>
+                }
+                error={
+                  <p className="pdf-status" role="alert">
+                    Не удалось отобразить страницу.
+                  </p>
+                }
+              />
+            ) }
+          </Document>
+          { pageError && (
+            <p className="pdf-status" role="alert">
+              Ошибка отрисовки. Попробуйте открыть другую страницу.
+            </p>
+          ) }
+        </div>
+        { source.quote && (
+          <footer className="pdf-reader-quote">
+            <strong>Фрагмент, использованный в ответе</strong>
+            <blockquote>{source.quote}</blockquote>
+          </footer>
+        ) }
+      </section>
+    </div>
+  )
+}
+
 export default function App()
 {
   const [chats, setChats] = useState(initialChats)
@@ -150,14 +450,13 @@ export default function App()
   const [selectedSource, setSelectedSource] = useState(null)
   const [sourcesOpen, setSourcesOpen] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [demoMode, setDemoMode] = useState(true)
+  const [readerSource, setReaderSource] = useState(null)
   const [isTyping, setIsTyping] = useState(false)
 
   const inputRef = useRef(null)
   const scrollRef = useRef(null)
 
   const messages = conversations[activeChat] ?? [welcomeMessage]
-  const currentChat = chats.find((chat) => chat.id === activeChat)
   const sources = useMemo(() => messages.flatMap((messages) => messages.sources ?? []), [messages])
   const filteredChats = chats.filter((chat) => chat.title.toLowerCase().includes(search.toLowerCase()))
   
@@ -402,8 +701,11 @@ export default function App()
                 <strong>{selectedSource.page}</strong>
               </div>
               <button
+                type="button"
                 className="open-document"
-                onClick={() => alert("Просмотр документа появится после подключения хранилища.")}
+                disabled={!selectedSource.pdfUrl}
+                title={selectedSource.pdfUrl ? "Открыть PDF внутри приложения" : "PDF-версия документа пока недоступна"}
+                onClick={() => setReaderSource(selectedSource)}
               >
                 Открыть документ
                 <ArrowUpRight size={14} />
@@ -437,6 +739,13 @@ export default function App()
             </div>
           ) }
         </aside>
+      ) }
+      { readerSource && (
+        <PdfReader
+          key={`${readerSource.id ?? readerSource.title}:${readerSource.pdfUrl}`}
+          source={readerSource}
+          onClose={() => setReaderSource(null)}
+        />
       ) }
     </main>
   )
