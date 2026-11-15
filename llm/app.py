@@ -172,6 +172,10 @@ class EmptyAnswerError(ValueError):
         super().__init__(f"{detail} (finish_reason={finish_reason or 'unknown'})")
 
 
+class StreamInterruptedError(ValueError):
+    """The model stream failed or stopped before the answer was complete."""
+
+
 def extract_answer(message: dict[str, Any]) -> str:
     """Return the answer text of a chat message, or "" when there is none."""
     content = message.get("content")
@@ -282,15 +286,21 @@ async def chat_ws(websocket: WebSocket) -> None:
             finish_reason = None
             received_content = False
             received_reasoning = False
+            received_done = False
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
+                    received_done = True
                     break
                 if not data:
                     continue
                 chunk = json.loads(data)
+                if chunk.get("error"):
+                    raise StreamInterruptedError(
+                        "Model reported an error during streaming"
+                    )
                 for choice in chunk.get("choices", []):
                     delta = choice.get("delta", {})
                     content = delta.get("content")
@@ -302,10 +312,12 @@ async def chat_ws(websocket: WebSocket) -> None:
                     finish_reason = choice.get("finish_reason") or finish_reason
             if not received_content:
                 raise EmptyAnswerError(finish_reason, has_reasoning=received_reasoning)
+            if not received_done and finish_reason is None:
+                raise StreamInterruptedError("Model stream ended before completion")
             await websocket.send_json({"type": "done", "finish_reason": finish_reason})
     except WebSocketDisconnect:
         return
-    except EmptyAnswerError as exc:
+    except (EmptyAnswerError, StreamInterruptedError) as exc:
         await websocket.send_json({"type": "error", "message": str(exc)})
         await websocket.close(code=1011)
     except httpx.TimeoutException:
