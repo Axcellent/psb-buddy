@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from typing import Literal
 
 class SourceChunkDto(BaseModel):
     id: str
@@ -36,3 +37,22 @@ class ChatReadDto(BaseModel):
 
 class ChatCreateDto(BaseModel):
     title: str = "Новый диалог"
+
+
+class RawSourceDto(BaseModel):
+    doc_id: str
+    chunk_id: str
+
+    section: str | None = None
+    page: int | None = None
+    
+    quote: str | None = None
+    chunks: list[SourceChunkDto] = []
+
+class ContextMessageDto(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+class RagResultDto(BaseModel):
+    text: str
+    sources: list[RawSourceDto] = []
