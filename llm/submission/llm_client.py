@@ -34,11 +34,15 @@ def make_client() -> httpx.Client:
     )
 
 
-_state = {"deadline": None, "budget_floor": 0}
+_state = {"deadline": None, "budget_floor": 0, "plain_budget": False, "rate_limited": 0}
 
 
 def set_deadline(timestamp: float | None) -> None:
     _state["deadline"] = timestamp
+
+
+def rate_limited() -> int:
+    return _state["rate_limited"]
 
 
 def time_left() -> float:
@@ -74,6 +78,8 @@ def post_json(client: httpx.Client, path: str, key: str, payload: dict[str, Any]
                 break
             time.sleep(min(_delay(attempt, None), max(0.0, time_left() - 2)))
             continue
+        if response.status_code == 429:
+            _state["rate_limited"] += 1
         if response.status_code in RETRY_STATUSES and not is_last:
             last_error = f"HTTP {response.status_code}"
             time.sleep(min(_delay(attempt, response), max(0.0, time_left() - 2)))
@@ -101,34 +107,58 @@ def _answer_text(message: dict[str, Any]) -> str:
     return THINK_BLOCK.sub("", content).strip()
 
 
+def _complete(text: str) -> str:
+    stripped = text.rstrip()
+    if stripped.endswith((".", "!", "?", "»", ")", '"')):
+        return stripped
+    ends = [m.end() for m in re.finditer(r"[.!?»)](?=\s)", stripped)]
+    if ends and ends[-1] > len(stripped) // 2:
+        return stripped[: ends[-1]]
+    return stripped
+
+
 def chat(client: httpx.Client, messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
-    budget = max(max_tokens or config.MAX_TOKENS, _state["budget_floor"])
-    for attempt in range(2):
+    requested = max_tokens or config.MAX_TOKENS
+    floor = 0 if _state["plain_budget"] else config.MIN_ANSWER_TOKENS
+    budget = max(requested, _state["budget_floor"], floor)
+    best = ""
+    for attempt in range(3):
         try:
             body = post_json(client, "/chat/completions", config.API_KEY, {
                 "model": config.LLM_MODEL,
                 "messages": messages,
-                "temperature": config.TEMPERATURE,
+                "temperature": config.ANSWER_TEMPERATURE,
                 "max_tokens": budget,
             })
         except LLMError as exc:
-            if attempt == 0 and exc.status == 400 and "channel" in exc.detail.lower():
+            if exc.status == 400 and "channel" in exc.detail.lower() and budget < 8192:
                 budget = min(8192, budget * 2)
                 continue
+            if exc.status in (400, 422) and budget > requested and not _state["plain_budget"]:
+                _state["plain_budget"] = True
+                _state["budget_floor"] = 0
+                budget = requested
+                log(f"larger max_tokens rejected, using the configured value: {exc}")
+                continue
+            if best:
+                break
             raise
         try:
             choice = body["choices"][0]
             text = _answer_text(choice["message"])
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError("unexpected chat response shape") from exc
-        if text:
-            if attempt and budget > _state["budget_floor"]:
-                _state["budget_floor"] = budget
+        reason = choice.get("finish_reason")
+        if text and reason != "length":
             return text
-        if choice.get("finish_reason") == "content_filter":
+        if len(text) > len(best):
+            best = text
+        if reason == "content_filter" or budget >= 8192 or _state["plain_budget"]:
             break
-        if choice.get("finish_reason") == "length":
-            budget = min(8192, budget * 2)
+        budget = min(8192, budget * 2)
+        _state["budget_floor"] = max(_state["budget_floor"], budget)
+    if best:
+        return _complete(best)
     raise LLMError("model returned an empty answer")
 
 

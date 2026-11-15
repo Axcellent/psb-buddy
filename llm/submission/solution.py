@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -10,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import config
 from assistant import Assistant
-from llm_client import LLMError, log, make_client, set_deadline
+from llm_client import LLMError, log, make_client, rate_limited, set_deadline
 
 QUESTION_FILES = ("questions.csv",)
 KB_FILES = ("knowledge-base.zip", "kb.zip", "knowledge_base.zip")
@@ -43,6 +44,33 @@ def write_submission(questions: list[tuple[str, str]], answers: dict[int, str]) 
             writer.writerow([qid, answers.get(index) or config.FALLBACK_ANSWER])
 
 
+MAX_PARALLEL = 8
+
+
+class Gate:
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.active = 0
+        self.condition = threading.Condition()
+
+    def __enter__(self) -> "Gate":
+        with self.condition:
+            while self.active >= self.limit:
+                self.condition.wait()
+            self.active += 1
+        return self
+
+    def __exit__(self, *exc) -> None:
+        with self.condition:
+            self.active -= 1
+            self.condition.notify_all()
+
+    def resize(self, limit: int) -> None:
+        with self.condition:
+            self.limit = limit
+            self.condition.notify_all()
+
+
 def main() -> int:
     started = time.monotonic()
     deadline = started + config.TIME_BUDGET_SECONDS
@@ -70,11 +98,16 @@ def main() -> int:
                     log(f"question #{index}: extract failed: {type(exc).__name__}")
                     return config.FALLBACK_ANSWER
 
+            gate = Gate(config.MAX_WORKERS)
+
             def work(index: int, question: str) -> tuple[int, str]:
                 if time.monotonic() > deadline:
                     return index, backup(index, question)
                 try:
-                    text = assistant.answer(client, question).text
+                    with gate:
+                        if time.monotonic() > deadline:
+                            return index, backup(index, question)
+                        text = assistant.answer(client, question).text
                     extracted.discard(index)
                     return index, text
                 except LLMError as exc:
@@ -83,13 +116,27 @@ def main() -> int:
                     log(f"question #{index}: {type(exc).__name__}: {exc}")
                 return index, backup(index, question)
 
-            with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as pool:
+            with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
                 futures = [pool.submit(work, i, q) for i, (_, q) in enumerate(questions)]
                 for done, future in enumerate(as_completed(futures), 1):
                     index, text = future.result()
                     answers[index] = text
+                    now = time.monotonic()
+                    remaining = len(questions) - done
+                    projected = (now - started) / done * remaining
+                    if rate_limited() and gate.limit > config.MAX_WORKERS:
+                        gate.resize(config.MAX_WORKERS)
+                        log(f"rate limited, parallel requests back to {gate.limit}")
+                    elif (
+                        done >= 2 * gate.limit
+                        and projected > deadline - now
+                        and gate.limit < MAX_PARALLEL
+                        and not rate_limited()
+                    ):
+                        gate.resize(min(MAX_PARALLEL, gate.limit * 2))
+                        log(f"behind schedule, parallel requests raised to {gate.limit}")
                     if done % 10 == 0 or done == len(questions):
-                        log(f"answered {done}/{len(questions)} in {time.monotonic() - started:.0f}s")
+                        log(f"answered {done}/{len(questions)} in {now - started:.0f}s")
 
             retry = sorted(extracted)
             if len(retry) > len(questions) // 2:
@@ -101,6 +148,9 @@ def main() -> int:
     finally:
         write_submission(questions, answers)
         missing = sum(1 for i in range(len(questions)) if answers.get(i) in (None, config.FALLBACK_ANSWER))
+        for index, (qid, _) in enumerate(questions):
+            mode = "extract" if index in extracted else "model"
+            log(f"[{qid}] {mode}: {(answers.get(index) or config.FALLBACK_ANSWER)[:400]}")
         log(
             f"submission.csv written: {len(questions)} rows; model answers: "
             f"{len(questions) - len(extracted) - missing}; extracted without model: {len(extracted)}; "

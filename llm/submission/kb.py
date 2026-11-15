@@ -296,7 +296,7 @@ def _chunk_law(doc: Document, paragraphs: list[str]) -> None:
         else:
             if prev_end == "." or part == 0:
                 part += 1
-            label = f"{base}, ч. {part}"
+            label = base
         bare = NOTE_SUFFIX_RE.sub("", paragraph).rstrip()
         prev_end = bare[-1:] if bare else "."
         if groups and groups[-1][0] == label and groups[-1][1] == context:
