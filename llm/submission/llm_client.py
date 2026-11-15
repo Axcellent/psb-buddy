@@ -115,6 +115,35 @@ def chat(client: httpx.Client, messages: list[dict[str, str]], max_tokens: int |
 
 
 def rerank(client: httpx.Client, query: str, documents: list[str]) -> list[int]:
+    if config.RERANKER_MODEL.lower().startswith("qwen3-reranker"):
+        prefix = (
+            '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. '
+            'Note that the answer can only be "yes" or "no".<|im_end|>\n<|im_start|>user\n'
+        )
+        suffix = '<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
+        ranked = []
+        for index, document in enumerate(documents):
+            prompt = (
+                prefix
+                + '<Instruct>: Given a web search query, retrieve relevant passages that answer the query\n'
+                + f'<Query>: {query}\n<Document>: {document}'
+                + suffix
+            )
+            body = post_json(client, "/completions", config.RERANK_KEY, {
+                "model": config.RERANKER_MODEL,
+                "prompt": prompt,
+                "max_tokens": 1,
+                "temperature": 0,
+            })
+            try:
+                answer = body["choices"][0]["text"].strip().lower()
+            except (KeyError, IndexError, TypeError, AttributeError) as exc:
+                raise LLMError("unexpected Qwen reranker response") from exc
+            if answer not in ("yes", "no"):
+                raise LLMError(f"unexpected Qwen reranker answer: {answer[:40]!r}")
+            ranked.append((answer == "yes", index))
+        return [index for _, index in sorted(ranked, key=lambda item: (-item[0], item[1]))]
+
     body = post_json(client, "/rerank", config.RERANK_KEY, {
         "model": config.RERANKER_MODEL,
         "query": query,
