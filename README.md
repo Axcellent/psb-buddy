@@ -23,7 +23,7 @@
 |[Макаренко Эвелина](https://github.com/MakarenkoEP)|ML|
 |[Егорцев Максим](https://github.com/vulkan790)|frontend|
 |[Сазоненко Дмитрий](https://github.com/Axcellent)|backend|
-|[Митерева Критина](https://github.com/Rinalon)|backend|
+|[Митерева Кристина](https://github.com/Rinalon)|backend|
 
 ## Возможности и состав проекта
 
