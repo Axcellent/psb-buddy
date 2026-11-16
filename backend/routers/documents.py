@@ -10,7 +10,7 @@ from repos import DocumentRepo
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 DOCUMENTS_DIR = os.getenv("DOCUMENTS_DIR", "./documents")
 
-@router.get("/{doc_id}/file")
+@router.get("/{doc_id}")
 async def get_document_file(doc_id: str, db: AsyncSession = Depends(get_db)):
     doc = await DocumentRepo(db).get(doc_id)
     if not doc:

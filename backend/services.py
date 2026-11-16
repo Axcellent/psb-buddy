@@ -94,11 +94,11 @@ class MessageService:
             doc = await self.doc_repo.get(s.doc_id)
             sources.append(SourceReadDto(
                 id=s.chunk_id,
-                title=doc.title if doc else "Документ",
+                title=doc.title if doc else (s.section or s.doc_id),
                 section=s.section,
                 page=s.page,
                 location=s.location,
-                pdfUrl=f"/api/documents/{s.doc_id}/file" if doc else None,
+                pdfUrl=f"/api/documents/{s.doc_id}",
                 quote=s.quote,
                 chunks=s.chunks,
                 chunkId=s.chunk_id,

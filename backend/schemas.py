@@ -13,6 +13,7 @@ class SourceReadDto(BaseModel):
     title: str
     section: str | None = None
     page: int | None = None
+    location: str | None = None
 
     pdf_url: str | None = Field(default=None, alias="pdfUrl")
     quote: str | None = None

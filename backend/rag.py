@@ -1,89 +1,48 @@
-from models import Message
-from schemas import RawSourceDto, ContextMessageDto, RagResultDto
+import os
+import httpx
+from schemas import RawSourceDto, ContextMessageDto, RagResultDto, RawChunkDto
 
-# rag.py
-from schemas import (
-    ContextMessageDto, RagResultDto, RawSourceDto, RawChunkDto
-)
-
-LAW_442_DOC_ID = "законы__442-ФЗ"
-LAW_442_TITLE = "Федеральный закон от 28.12.2013 № 442-ФЗ"
-
-EXAMPLE_SOURCES = [
-    RawSourceDto(
-        doc_id=LAW_442_DOC_ID,
-        chunk_id="законы__442-ФЗ#2.1",
-        section="Статья 2. Основные понятия",
-        page=None,
-        location="п. 1, пп. 1",
-        quote=(
-            "социальное обслуживание граждан — деятельность "
-            "по предоставлению социальных услуг гражданам;"
-        ),
-        chunks=[
-            RawChunkDto(
-                id="законы__442-ФЗ#2.1",
-                page=None,
-                text=(
-                    "1. Для целей настоящего Федерального закона используются "
-                    "следующие основные понятия:\n"
-                    "1) социальное обслуживание граждан — деятельность "
-                    "по предоставлению социальных услуг гражданам;"
-                ),
-            ),
-            RawChunkDto(
-                id="законы__442-ФЗ#2.2",
-                page=None,
-                text=(
-                    "2) социальная услуга — действие или действия в сфере "
-                    "социального обслуживания по оказанию постоянной, "
-                    "периодической, разовой помощи гражданину;"
-                ),
-            ),
-        ],
-    ),
-    RawSourceDto(
-        doc_id=LAW_442_DOC_ID,
-        chunk_id="законы__442-ФЗ#1.1",
-        section="Статья 1. Предмет регулирования",
-        page=None,
-        location="п. 1",
-        quote=(
-            "Настоящий Федеральный закон устанавливает правовые, "
-            "организационные и экономические основы социального "
-            "обслуживания граждан в Российской Федерации."
-        ),
-        chunks=[
-            RawChunkDto(
-                id="законы__442-ФЗ#1.1",
-                page=None,
-                text=(
-                    "1. Настоящий Федеральный закон устанавливает правовые, "
-                    "организационные и экономические основы социального "
-                    "обслуживания граждан в Российской Федерации."
-                ),
-            ),
-        ],
-    ),
-]
-
-EXAMPLE_ANSWER = (
-    "Согласно статье 2 Федерального закона от 28.12.2013 № 442-ФЗ "
-    "«Об основах социального обслуживания граждан в Российской Федерации», "
-    "социальное обслуживание граждан — это деятельность по предоставлению "
-    "социальных услуг гражданам [1]. Сама социальная услуга определяется "
-    "как действие или действия по оказанию постоянной, периодической или "
-    "разовой помощи гражданину [1]. Предмет регулирования закона — правовые, "
-    "организационные и экономические основы социального обслуживания [2]."
-)
-
+LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://localhost:8001")
+AI_TIMEOUT = float(os.getenv("AI_TIMEOUT_SECONDS", "180.0"))
 
 async def rag_answer(
     question: str,
     history: list[ContextMessageDto],
 ) -> RagResultDto:
-    # Пока AI-слой не подключён — отдаём демо-пример.
-    return RagResultDto(
-        text=EXAMPLE_ANSWER,
-        sources=EXAMPLE_SOURCES,
-    )
+    async with httpx.AsyncClient(timeout=AI_TIMEOUT) as client:
+        try:
+            response = await client.post(
+                f"{LLM_SERVICE_URL}/answer",
+                json={
+                    "question": question,
+                    "history": [{"role": m.role, "content": m.content} for m in history],
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            raise RuntimeError(f"LLM service error: {e}") from e
+
+        sources = []
+        for s in data.get("sources", []):
+            sources.append(RawSourceDto(
+                doc_id=s.get("doc_id", ""),
+                chunk_id=s.get("chunk_id", ""),
+                location=s.get("location"),
+                section=s.get("section"),
+                page=s.get("page"),
+                quote=s.get("quote"),
+                chunks=[
+                    RawChunkDto(
+                        id=c.get("id", ""),
+                        page=c.get("page"),
+                        text=c.get("text", ""),
+                    )
+                    for c in s.get("chunks", [])
+                ],
+            ))
+
+        return RagResultDto(
+            text=data.get("text", ""),
+            sources=sources,
+        )
