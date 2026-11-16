@@ -1,4 +1,6 @@
 **/.env
+**/.env.*
+!**/.env.example
 scripts/seaweedfs/s3-config.json
 __pycache__/
 *.py[cod]
@@ -8,3 +10,9 @@ __pycache__/
 **/.venv/
 .pytest_cache/
 data/
+backend/app.db
+backend/documents/
+**/submission.zip
+**/submission.csv
+frontend/node_modules/
+frontend/dist/

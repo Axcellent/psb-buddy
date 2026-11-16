@@ -1,5 +1,7 @@
 import json
+import logging
 from datetime import datetime
+from urllib.parse import quote
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repos import ChatRepo, MessageRepo, DocumentRepo
@@ -11,7 +13,9 @@ from schemas import (ChatReadDto,
                      RagResultDto,
                      ContextMessageDto)
 
-from rag import rag_answer
+from rag import RagServiceError, rag_answer
+
+logger = logging.getLogger(__name__)
 
 MONTHS_RU = ["янв.", "февр.", "мар.", "апр.", "мая", "июн.",
              "июл.", "авг.", "сент.", "окт.", "нояб.", "дек."]
@@ -86,7 +90,8 @@ class MessageService:
         history_dto = [ContextMessageDto(role=m.role, content=m.content) for m in history]
         try:
             result = await rag_answer(text, history_dto)
-        except Exception:
+        except RagServiceError as exc:
+            logger.warning("LLM request failed: %s", type(exc.__cause__).__name__)
             result = RagResultDto(text="Не удалось получить ответ. Попробуйте ещё раз.", sources=[])
 
         sources: list[SourceReadDto] = []
@@ -98,7 +103,8 @@ class MessageService:
                 section=s.section,
                 page=s.page,
                 location=s.location,
-                pdfUrl=f"/api/documents/{s.doc_id}",
+                pdfUrl=f"/api/documents/{quote(s.doc_id, safe='')}",
+                mimeType=doc.mime if doc else None,
                 quote=s.quote,
                 chunks=s.chunks,
                 chunkId=s.chunk_id,

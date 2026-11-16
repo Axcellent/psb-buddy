@@ -1,5 +1,6 @@
 services:
   seaweedfs-s3:
+    profiles: [storage]
     image: chrislusf/seaweedfs:latest
     container_name: seaweedfs-s3
     ports:
@@ -23,11 +24,12 @@ services:
       DATA_DIR: /data
       EMB_MODEL: ${EMB_MODEL:-baai/bge-m3}
       RERANKER_MODEL: ${RERANKER_MODEL:-qwen3-reranker-8b}
-      USE_RERANKER: ${USE_RERANKER:-1}
+      USE_RERANKER: ${USE_RERANKER:-0}
+      SELF_CHECK: ${SELF_CHECK:-1}
     ports:
       - "127.0.0.1:8001:8000"
     volumes:
-      - ./data:/data:ro
+      - "${DATA_DIR:-./demo-data}:/data:ro"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -35,7 +37,46 @@ services:
       interval: 15s
       timeout: 8s
       retries: 3
-      start_period: 120s
+      start_period: 300s
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      LLM_SERVICE_URL: http://llm:8000
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-300}
+      DATA_DIR: /data
+      DOCUMENTS_DIR: /app/documents
+      DATABASE_URL: sqlite+aiosqlite:////app/state/app.db
+    ports:
+      - "127.0.0.1:8080:8000"
+    volumes:
+      - "${DATA_DIR:-./demo-data}:/data:ro"
+      - backend-state:/app/state
+    depends_on:
+      llm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "127.0.0.1:3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
 volumes:
   seaweedfs-data:
+  backend-state:

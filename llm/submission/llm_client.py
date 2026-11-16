@@ -34,7 +34,7 @@ def make_client() -> httpx.Client:
     )
 
 
-_state = {"deadline": None, "budget_floor": 0, "plain_budget": False, "rate_limited": 0}
+_state = {"deadline": None, "rate_limited": 0}
 
 
 def set_deadline(timestamp: float | None) -> None:
@@ -85,7 +85,10 @@ def post_json(client: httpx.Client, path: str, key: str, payload: dict[str, Any]
             time.sleep(min(_delay(attempt, response), max(0.0, time_left() - 2)))
             continue
         if response.status_code >= 400:
-            detail = " ".join(response.text.split())[:200]
+            # Тело ошибки провайдера может содержать служебные ключи.
+            # Сохраняем только признаки, нужные для выбора способа повтора.
+            low = response.text.lower()
+            detail = " ".join(token for token in ("context", "too long", "too large", "prompt is too", "input length", "exceeds the maximum", "max_tokens", "channel") if token in low)
             raise LLMError(f"{path}: HTTP {response.status_code}", response.status_code, detail)
         try:
             return response.json()
@@ -128,15 +131,15 @@ def _complete(text: str) -> str:
 
 def chat(client: httpx.Client, messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
     requested = max_tokens or config.MAX_TOKENS
-    floor = 0 if _state["plain_budget"] else config.MIN_ANSWER_TOKENS
-    budget = max(requested, _state["budget_floor"], floor)
+    budget = requested
+    plain_budget = False
     best = ""
     for attempt in range(3):
         try:
             body = post_json(client, "/chat/completions", config.API_KEY, {
                 "model": config.LLM_MODEL,
                 "messages": messages,
-                "temperature": config.ANSWER_TEMPERATURE,
+                "temperature": config.TEMPERATURE,
                 "max_tokens": budget,
             })
         except LLMError as exc:
@@ -145,9 +148,8 @@ def chat(client: httpx.Client, messages: list[dict[str, str]], max_tokens: int |
                 continue
             if is_too_long(exc):
                 raise
-            if exc.status in (400, 422) and budget > requested and not _state["plain_budget"]:
-                _state["plain_budget"] = True
-                _state["budget_floor"] = 0
+            if exc.status in (400, 422) and budget > requested and not plain_budget:
+                plain_budget = True
                 budget = requested
                 log(f"larger max_tokens rejected, using the configured value: {exc}")
                 continue
@@ -164,10 +166,9 @@ def chat(client: httpx.Client, messages: list[dict[str, str]], max_tokens: int |
             return text
         if len(text) > len(best):
             best = text
-        if reason == "content_filter" or budget >= 8192 or _state["plain_budget"]:
+        if reason == "content_filter" or budget >= 8192 or plain_budget:
             break
         budget = min(8192, budget * 2)
-        _state["budget_floor"] = max(_state["budget_floor"], budget)
     if best:
         return _complete(best)
     raise LLMError("model returned an empty answer")

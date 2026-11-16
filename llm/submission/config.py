@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from pathlib import Path
 
 
@@ -12,13 +13,14 @@ def env(name: str, default: str = "") -> str:
 def env_int(name: str, default: int, low: int, high: int) -> int:
     try:
         return max(low, min(high, int(float(env(name)))))
-    except ValueError:
+    except (ValueError, OverflowError):
         return default
 
 
 def env_float(name: str, default: float, low: float, high: float) -> float:
     try:
-        return max(low, min(high, float(env(name))))
+        value = float(env(name))
+        return max(low, min(high, value)) if math.isfinite(value) else default
     except ValueError:
         return default
 
@@ -34,7 +36,7 @@ LLM_MODEL = (
     env("LLM_MODEL") or env("OPENAI_MODEL") or env("GEN_MODEL") or "deepseek/deepseek-v4.1-flash"
 )
 EMB_MODEL = env("EMB_MODEL", "baai/bge-m3")
-RERANKER_MODEL = env("RERANKER_MODEL", "cohere/rerank-5-fast")
+RERANKER_MODEL = env("RERANKER_MODEL", "qwen3-reranker-8b")
 USE_RERANKER = env("USE_RERANKER", "0").lower() in ("1", "true", "yes")
 RERANK_CANDIDATES = env_int("RERANK_CANDIDATES", 12, 2, 50)
 RERANK_DOC_CHARS = 1500
@@ -42,7 +44,7 @@ RERANK_DOC_CHARS = 1500
 TEMPERATURE = env_float("TEMPERATURE", 0.0, 0.0, 2.0)
 MAX_TOKENS = env_int("MAX_TOKENS", 1024, 256, 8192)
 MAX_WORKERS = env_int("MAX_WORKERS", 4, 1, 8)
-SELF_CHECK = env("SELF_CHECK", "0").lower() in ("1", "true", "yes")
+SELF_CHECK = env("SELF_CHECK", "1").lower() in ("1", "true", "yes")
 MIN_ANSWER_TOKENS = 4096
 ANSWER_TEMPERATURE = 0.0
 

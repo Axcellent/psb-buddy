@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { X } from "lucide-react"
+import { apiUrl } from "./api"
 
 export default function TextReader({ source, onClose }) {
   const [doc, setDoc] = useState(null)
@@ -11,12 +12,13 @@ export default function TextReader({ source, onClose }) {
     let cancelled = false
     setLoading(true)
     setError("")
+    setDoc(null)
     if (!source.pdfUrl) {
       setLoading(false)
       setError("URL документа не указан")
       return
     }
-    fetch(source.pdfUrl)
+    fetch(apiUrl(source.pdfUrl))
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         const type = r.headers.get("content-type") || ""

@@ -1,7 +1,9 @@
 const BASE = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "")
 
+export const apiUrl = (path) => path?.startsWith("/") ? `${BASE}${path}` : path
+
 async function request(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(apiUrl(path), {
     headers: { "content-type": "application/json", ...(options.headers || {}) },
     ...options,
   })

@@ -16,6 +16,7 @@ from editions import (
     violation,
 )
 from grounding import is_grounded, is_plain_refusal
+from evidence import UnsupportedAnswer, evidence_pool, verify_answer
 from llm_client import LLMError, chat, is_too_long, log
 from retrieval import Retriever
 
@@ -27,6 +28,7 @@ class Answer:
     company_chunks: list[kb.Chunk]
     law_chunks: list[kb.Chunk]
     hints: list[kb.Chunk] = field(default_factory=list)
+    evidence: list[kb.Chunk] = field(default_factory=list)
 
 
 class Assistant:
@@ -40,8 +42,6 @@ class Assistant:
         self.clauses = Retriever(documents, use_company=True)
         self.catalog = kb.catalog(documents)
         self.vat_notes = vat_conflicts(documents)
-        self.compact = False
-        self.overflows = 0
 
     @classmethod
     def from_archive(cls, path) -> "Assistant":
@@ -126,43 +126,39 @@ class Assistant:
             result.extend(self.docs_by_id[doc_id].chunks if doc_id in full else selected)
         return result
 
-    def extract(self, question: str) -> str:
-        turns = prompts.parse_dialog(question)
-        ranked = self.clauses.top(prompts.retrieval_query(turns), 6)
-        specific = [chunk for chunk in ranked if "вводная часть" not in chunk.label]
-        found = (specific or ranked)[:2]
-        if not found:
-            return (
-                "В базе знаний не найдено положений, которые отвечают на этот вопрос. "
-                "Уточните, о каком документе, контрагенте или норме идёт речь."
-            )
-        parts = [f"{chunk.text.strip()[:380]} ({chunk.label})" for chunk in found]
-        return prompts.clean_answer("По базе знаний: " + " ".join(parts))
-
     def answer(self, client: httpx.Client, question: str) -> Answer:
-        prepared = self._prepare(client, question, self.compact)
+        prepared = self._prepare(client, question)
         try:
             draft = chat(client, prepared[0])
         except LLMError as exc:
-            if self.compact or not is_too_long(exc):
+            if not is_too_long(exc):
                 raise
-            self.overflows += 1
-            if self.overflows >= 2:
-                self.compact = True
             log(f"request too long for the model, retrying with a compact context: {exc}")
             prepared = self._prepare(client, question, True)
             draft = chat(client, prepared[0])
         messages, company_docs, company_chunks, law_chunks, findings, hints, turns, support = prepared
-        if config.SELF_CHECK:
-            review = [*messages, {"role": "assistant", "content": draft}, {"role": "user", "content": prompts.SELF_CHECK_PROMPT}]
-            try:
-                draft = chat(client, review)
-            except LLMError as exc:
-                log(f"self-check skipped: {exc}")
         draft = self._check_editions(client, messages, draft, findings)
         draft = self._recheck_refusal(client, turns, draft, support)
         text = prompts.clean_answer(draft)
-        return Answer(text, company_docs, company_chunks, law_chunks, hints)
+        selected = [*company_chunks, *law_chunks, *hints, *support]
+        selected.extend(chunk for doc in company_docs for chunk in doc.chunks)
+        pool = evidence_pool(self.documents, selected)
+        try:
+            evidence = verify_answer(client, turns, text, pool, self.docs_by_id)
+        except UnsupportedAnswer as exc:
+            if not config.SELF_CHECK:
+                raise
+            correction = (
+                "Проверка по базе знаний обнаружила неподтвержденный ответ: "
+                f"{exc.detail}. Исправь ответ по исходным документам. "
+                "Каждый вывод подтверждай существующим документом и конкретным положением; "
+                "нехватку данных объясни прямо. Выведи только исправленный ответ."
+            )
+            draft = chat(client, [*messages, {"role": "assistant", "content": text}, {"role": "user", "content": correction}])
+            draft = self._check_editions(client, messages, draft, findings)
+            text = prompts.clean_answer(draft)
+            evidence = verify_answer(client, turns, text, pool, self.docs_by_id)
+        return Answer(text, company_docs, company_chunks, law_chunks, hints, evidence)
 
     def _recheck_refusal(self, client: httpx.Client, turns, draft: str, hints: list[kb.Chunk]) -> str:
         if not hints or not is_plain_refusal(draft):

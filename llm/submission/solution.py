@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -11,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import config
 from assistant import Assistant
-from llm_client import LLMError, log, make_client, rate_limited, set_deadline
+from llm_client import log, make_client, set_deadline
 
 QUESTION_FILES = ("questions.csv",)
 KB_FILES = ("knowledge-base.zip", "kb.zip", "knowledge_base.zip")
@@ -28,47 +27,24 @@ def find_file(names: tuple[str, ...]) -> Path:
 
 
 def load_questions(path: Path) -> list[tuple[str, str]]:
-    with path.open(encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
+    with path.open(encoding="utf-8-sig", newline="") as file:
+        reader = csv.DictReader(file)
         if not reader.fieldnames or not {"id", "question"} <= set(reader.fieldnames):
             raise ValueError("questions.csv must have id and question columns")
-        rows = [(str(r["id"]).strip(), str(r["question"] or "").strip()) for r in reader]
-    return [(qid, q) for qid, q in rows if qid]
+        rows = [(row["id"], row["question"] or "") for row in reader]
+    identifiers = [qid for qid, _ in rows]
+    if any(not qid or not qid.strip() for qid in identifiers) or len(set(identifiers)) != len(identifiers):
+        raise ValueError("questions.csv must contain unique nonempty IDs")
+    return rows
 
 
 def write_submission(questions: list[tuple[str, str]], answers: dict[int, str]) -> None:
-    with open("submission.csv", "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    with open("submission.csv", "w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, quoting=csv.QUOTE_ALL, lineterminator="\n")
         writer.writerow(["id", "answer"])
         for index, (qid, _) in enumerate(questions):
-            writer.writerow([qid, answers.get(index) or config.FALLBACK_ANSWER])
-
-
-MAX_PARALLEL = 8
-
-
-class Gate:
-    def __init__(self, limit: int) -> None:
-        self.limit = limit
-        self.active = 0
-        self.condition = threading.Condition()
-
-    def __enter__(self) -> "Gate":
-        with self.condition:
-            while self.active >= self.limit:
-                self.condition.wait()
-            self.active += 1
-        return self
-
-    def __exit__(self, *exc) -> None:
-        with self.condition:
-            self.active -= 1
-            self.condition.notify_all()
-
-    def resize(self, limit: int) -> None:
-        with self.condition:
-            self.limit = limit
-            self.condition.notify_all()
+            text = answers.get(index) or config.FALLBACK_ANSWER
+            writer.writerow([qid, text[:10000]])
 
 
 def main() -> int:
@@ -77,85 +53,34 @@ def main() -> int:
     set_deadline(started + config.HARD_DEADLINE_SECONDS)
     questions = load_questions(find_file(QUESTION_FILES))
     answers: dict[int, str] = {}
-    extracted: set[int] = set()
-    log(f"questions: {len(questions)}; model: set; workers: {config.MAX_WORKERS}")
+    log(f"questions: {len(questions)}; workers: {config.MAX_WORKERS}")
     try:
         assistant = Assistant.from_archive(find_file(KB_FILES))
-        laws = sum(1 for d in assistant.documents if d.kind == "law")
-        log(
-            f"documents: {len(assistant.documents)} ({laws} laws); "
-            f"law fragments: {len(assistant.retriever.chunks)}; "
-            f"company full text: {assistant.company_fulltext}"
-        )
         with make_client() as client:
             assistant.prepare(client)
 
-            def backup(index: int, question: str) -> str:
-                extracted.add(index)
-                try:
-                    return assistant.extract(question)
-                except Exception as exc:
-                    log(f"question #{index}: extract failed: {type(exc).__name__}")
-                    return config.FALLBACK_ANSWER
-
-            gate = Gate(config.MAX_WORKERS)
-
             def work(index: int, question: str) -> tuple[int, str]:
                 if time.monotonic() > deadline:
-                    return index, backup(index, question)
+                    return index, config.FALLBACK_ANSWER
                 try:
-                    with gate:
-                        if time.monotonic() > deadline:
-                            return index, backup(index, question)
-                        text = assistant.answer(client, question).text
-                    extracted.discard(index)
+                    text = assistant.answer(client, question).text
                     return index, text
-                except LLMError as exc:
-                    log(f"question #{index}: {exc}")
                 except Exception as exc:
-                    log(f"question #{index}: {type(exc).__name__}: {exc}")
-                return index, backup(index, question)
+                    # Технический сбой не является доказательством отсутствия нормы.
+                    log(f"question #{index}: {type(exc).__name__}")
+                    return index, config.FALLBACK_ANSWER
 
-            with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
-                futures = [pool.submit(work, i, q) for i, (_, q) in enumerate(questions)]
+            with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as pool:
+                futures = [pool.submit(work, index, question) for index, (_, question) in enumerate(questions)]
                 for done, future in enumerate(as_completed(futures), 1):
                     index, text = future.result()
                     answers[index] = text
-                    now = time.monotonic()
-                    remaining = len(questions) - done
-                    projected = (now - started) / done * remaining
-                    if rate_limited() and gate.limit > config.MAX_WORKERS:
-                        gate.resize(config.MAX_WORKERS)
-                        log(f"rate limited, parallel requests back to {gate.limit}")
-                    elif (
-                        done >= 2 * gate.limit
-                        and projected > deadline - now
-                        and gate.limit < MAX_PARALLEL
-                        and not rate_limited()
-                    ):
-                        gate.resize(min(MAX_PARALLEL, gate.limit * 2))
-                        log(f"behind schedule, parallel requests raised to {gate.limit}")
                     if done % 10 == 0 or done == len(questions):
-                        log(f"answered {done}/{len(questions)} in {now - started:.0f}s")
-
-            retry = sorted(extracted)
-            if len(retry) > len(questions) // 2:
-                retry = []
-            for index in retry:
-                if time.monotonic() > deadline:
-                    break
-                answers[index] = work(index, questions[index][1])[1]
+                        log(f"answered {done}/{len(questions)} in {time.monotonic() - started:.0f}s")
     finally:
         write_submission(questions, answers)
-        missing = sum(1 for i in range(len(questions)) if answers.get(i) in (None, config.FALLBACK_ANSWER))
-        for index, (qid, _) in enumerate(questions):
-            mode = "extract" if index in extracted else "model"
-            log(f"[{qid}] {mode}: {(answers.get(index) or config.FALLBACK_ANSWER)[:400]}")
-        log(
-            f"submission.csv written: {len(questions)} rows; model answers: "
-            f"{len(questions) - len(extracted) - missing}; extracted without model: {len(extracted)}; "
-            f"fallback answers: {missing}; total {time.monotonic() - started:.0f}s"
-        )
+        missing = sum(1 for index in range(len(questions)) if answers.get(index) in (None, config.FALLBACK_ANSWER))
+        log(f"submission.csv written: {len(questions)} rows; technical errors: {missing}; total {time.monotonic() - started:.0f}s")
     return 0
 
 

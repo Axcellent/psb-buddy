@@ -16,10 +16,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
+from submission.config import env_float, env_int
+
 
 def first_env(*names: str, default: str = "") -> str:
     return next(
-        (value for name in names if (value := os.getenv(name, "").strip())), default
+        (value for name in names if (value := os.getenv(name, "").strip()) and value != name), default
     )
 
 
@@ -35,14 +37,14 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
-            base_url=first_env("LLM_BASE_URL", "OPENAI_BASE_URL").rstrip("/"),
+            base_url=first_env("LLM_BASE_URL", "OPENAI_BASE_URL", "BASE_URL").rstrip("/"),
             api_key=first_env("LLM_API_KEY", "OPENAI_API_KEY"),
             model=first_env(
-                "LLM_MODEL", "OPENAI_MODEL", "GEN_MODEL", default="gpt-oss-20b"
+                "LLM_MODEL", "OPENAI_MODEL", "GEN_MODEL", default="deepseek/deepseek-v4.1-flash"
             ),
-            temperature=float(first_env("TEMPERATURE", default="0")),
-            max_tokens=int(first_env("MAX_TOKENS", default="1024")),
-            max_workers=max(1, int(first_env("MAX_WORKERS", default="2"))),
+            temperature=env_float("TEMPERATURE", 0.0, 0.0, 2.0),
+            max_tokens=env_int("MAX_TOKENS", 1024, 256, 8192),
+            max_workers=env_int("MAX_WORKERS", 4, 1, 8),
         )
 
 
@@ -63,7 +65,7 @@ class ChatRequest(BaseModel):
 
     messages: list[ChatMessage] = Field(min_length=1)
     temperature: float | None = Field(default=None, ge=0, le=2)
-    max_tokens: int | None = Field(default=None, ge=1)
+    max_tokens: int | None = Field(default=None, ge=1, le=8192)
 
 
 class ChatResponse(BaseModel):
@@ -80,8 +82,8 @@ async def lifespan(app: FastAPI):
     app.state.client = httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0))
     app.state.semaphore = asyncio.Semaphore(settings.max_workers)
     app.state.rag = RagService()
-    await asyncio.to_thread(app.state.rag.load)
     try:
+        await asyncio.to_thread(app.state.rag.load)
         yield
     finally:
         await asyncio.to_thread(app.state.rag.close)
@@ -388,3 +390,5 @@ async def chat_ws(websocket: WebSocket) -> None:
     except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError):
         await websocket.send_json({"type": "error", "message": "Model request failed"})
         await websocket.close(code=1011)
+    else:
+        await websocket.close(code=1000)

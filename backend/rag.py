@@ -1,15 +1,17 @@
-import os
 import httpx
-from schemas import RawSourceDto, ContextMessageDto, RagResultDto, RawChunkDto
 
-LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://localhost:8001")
-AI_TIMEOUT = float(os.getenv("AI_TIMEOUT_SECONDS", "180.0"))
+from config import LLM_SERVICE_URL, AI_TIMEOUT
+from schemas import ContextMessageDto, RagResultDto
+
+
+class RagServiceError(RuntimeError):
+    """LLM-сервис недоступен или нарушил контракт ответа."""
 
 async def rag_answer(
     question: str,
     history: list[ContextMessageDto],
 ) -> RagResultDto:
-    async with httpx.AsyncClient(timeout=AI_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(AI_TIMEOUT, connect=min(5.0, AI_TIMEOUT))) as client:
         try:
             response = await client.post(
                 f"{LLM_SERVICE_URL}/answer",
@@ -19,30 +21,6 @@ async def rag_answer(
                 },
             )
             response.raise_for_status()
-            data = response.json()
-        except Exception as e:
-            raise RuntimeError(f"LLM service error: {e}") from e
-
-        sources = []
-        for s in data.get("sources", []):
-            sources.append(RawSourceDto(
-                doc_id=s.get("doc_id", ""),
-                chunk_id=s.get("chunk_id", ""),
-                location=s.get("location"),
-                section=s.get("section"),
-                page=s.get("page"),
-                quote=s.get("quote"),
-                chunks=[
-                    RawChunkDto(
-                        id=c.get("id", ""),
-                        page=c.get("page"),
-                        text=c.get("text", ""),
-                    )
-                    for c in s.get("chunks", [])
-                ],
-            ))
-
-        return RagResultDto(
-            text=data.get("text", ""),
-            sources=sources,
-        )
+            return RagResultDto.model_validate(response.json())
+        except (httpx.HTTPError, ValueError) as exc:
+            raise RagServiceError("LLM service request failed") from exc

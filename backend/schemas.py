@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class RawChunkDto(BaseModel):
@@ -16,6 +16,7 @@ class SourceReadDto(BaseModel):
     location: str | None = None
 
     pdf_url: str | None = Field(default=None, alias="pdfUrl")
+    mime_type: str | None = Field(default=None, alias="mimeType")
     quote: str | None = None
     chunks: list[RawChunkDto] = Field(default_factory=list)
     chunk_id: str | None = Field(default=None, alias="chunkId")
@@ -28,11 +29,18 @@ class MessageReadDto(BaseModel):
     role: str
     time: str
     text: str
-    sources: list[SourceReadDto] = []
+    sources: list[SourceReadDto] = Field(default_factory=list)
 
 
 class MessageCreateDto(BaseModel):
-    text: str
+    text: str = Field(min_length=1)
+
+    @field_validator("text")
+    @classmethod
+    def nonblank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Message is empty")
+        return value
 
 
 class ChatReadDto(BaseModel):
@@ -46,13 +54,13 @@ class ChatCreateDto(BaseModel):
 
 
 class RawSourceDto(BaseModel):
-    doc_id: str
-    chunk_id: str
-    location: str | None
+    doc_id: str = Field(min_length=1)
+    chunk_id: str = Field(min_length=1)
+    location: str | None = None
     section: str | None = None
     page: int | None = None
     quote: str | None = None
-    chunks: list[RawChunkDto] = []
+    chunks: list[RawChunkDto] = Field(default_factory=list)
 
 
 class ContextMessageDto(BaseModel):
@@ -61,5 +69,12 @@ class ContextMessageDto(BaseModel):
 
 
 class RagResultDto(BaseModel):
-    text: str
-    sources: list[RawSourceDto] = []
+    text: str = Field(min_length=1)
+    sources: list[RawSourceDto] = Field(default_factory=list)
+
+    @field_validator("text")
+    @classmethod
+    def nonblank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("LLM answer is empty")
+        return value

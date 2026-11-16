@@ -21,7 +21,7 @@ import {
 import "react-pdf/dist/Page/AnnotationLayer.css"
 import "react-pdf/dist/Page/TextLayer.css"
 
-import { api } from "./api"
+import { api, apiUrl } from "./api"
 import TextReader from "./TextReader"
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -294,7 +294,7 @@ function PdfReader({ source, onClose }) {
         </div>
         <div className="pdf-reader-body" ref={bodyRef}>
           <Document
-            file={source.pdfUrl}
+            file={apiUrl(source.pdfUrl)}
             onLoadSuccess={handleLoadSuccess}
             onLoadError={(error) => {
               setNumPages(0)
@@ -765,7 +765,9 @@ export default function App() {
       )}
 
       {readerSource &&
-        (readerSource.pdfUrl?.toLowerCase().endsWith(".pdf") ? (
+        (readerSource.mimeType === "application/pdf" ||
+         readerSource.title?.toLowerCase().endsWith(".pdf") ||
+         readerSource.pdfUrl?.toLowerCase().endsWith(".pdf") ? (
           <PdfReader
             key={`pdf-${readerSource.id}`}
             source={readerSource}
