@@ -1,103 +1,33 @@
-import { useMemo, useRef, useEffect, useState } from "react"
-import { Document, Page, pdfjs} from "react-pdf"
-import { MessageCircle, Search, ChevronLeft, ChevronRight, Minus, Plus, X, FileText, Send, Copy, ThumbsUp, ThumbsDown, Check, Command, ArrowUpRight } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { Document, Page, pdfjs } from "react-pdf"
+import {
+  MessageCircle,
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  Minus,
+  Plus,
+  X,
+  FileText,
+  Send,
+  Copy,
+  ThumbsUp,
+  ThumbsDown,
+  Check,
+  Command,
+  ArrowUpRight,
+} from "lucide-react"
 
 import "react-pdf/dist/Page/AnnotationLayer.css"
 import "react-pdf/dist/Page/TextLayer.css"
+
+import { api } from "./api"
+import TextReader from "./TextReader"
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url,
 ).toString()
-
-const initialChats = [
-  { 
-    id: "contract", 
-    title: "Проверка договора", 
-    date: "10 нояб." 
-  },
-  { 
-    id: "vacation", 
-    title: "Оформление отпуска", 
-    date: "10 нояб." 
-  },
-  { 
-    id: "nda", 
-    title: "Соглашение о конфиденциальности", 
-    date: "8 нояб." 
-  }
-]
-
-const welcomeMessage = {
-  id: "welcome",
-  role: "assistant",
-  time: "19:42",
-  sources: [],
-  text: "Здравствуйте! Я помогу найти ответы в документах и покажу, на какие положения опирается каждый вывод.\n\nЗадайте вопрос — например: «Какие документы нужны для оформления отпуска?»"
-}
-
-const demoAnswer = {
-  text: "Для оформления ежегодного отпуска обычно нужно проверить график отпусков и подать заявление, если требуется согласование или изменение запланированных дат. Работодатель должен уведомить сотрудника о начале отпуска не позднее чем за две недели.\n\nПроверьте локальный порядок согласования в вашей организации: он может предусматривать дополнительные шаги.",
-  sources: [
-  {
-    id: "rules-vacation",
-    title: "Правила внутреннего трудового распорядка.pdf",
-    section: "Раздел 6. Время отдыха",
-    page: 12,
-    pdfUrl: "/document/rules.pdf",
-    quote:
-      "Ежегодный оплачиваемый отпуск предоставляется в соответствии " +
-      "с утверждённым графиком отпусков. При изменении запланированных " +
-      "дат сотрудник направляет заявление на согласование.",
-    chunks: [
-      {
-        id: "rules-1",
-        page: 12,
-        text:
-          "Ежегодный оплачиваемый отпуск предоставляется в соответствии " +
-          "с утверждённым графиком отпусков. При изменении запланированных " +
-          "дат сотрудник направляет заявление на согласование."
-      },
-      {
-        id: "rules-2",
-        page: 12,
-        text:
-          "В заявлении сотрудник указывает предполагаемые даты " +
-          "и продолжительность отпуска. Заявление передаётся " +
-          "на согласование в установленном порядке."
-      },
-      {
-        id: "rules-3",
-        page: 13,
-        text:
-          "После согласования заявления ответственное подразделение " +
-          "оформляет необходимые документы."
-      },
-    ],
-      chunkId: "rules-1"
-    },
-    {
-      id: "schedule-vacation",
-      title: "График отпусков 2026.xlsx",
-      section: "Лист «Сотрудники»",
-      page: null,
-      location: "Строка 48",
-      quote:
-        "Демонстрационная запись графика: даты отпуска сотрудника " +
-        "согласованы с руководителем.",
-      chunks: [
-        {
-          id: "schedule-1",
-          page: null,
-          text:
-            "Демонстрационная запись графика: даты отпуска сотрудника " +
-            "согласованы с руководителем."
-        },
-      ],
-      chunkId: "schedule-1"
-    }
-  ]
-}
 
 const LogoMark = ({ small = false }) => (
   <img
@@ -109,45 +39,47 @@ const LogoMark = ({ small = false }) => (
   />
 )
 
-function MessageBubble({ message, onSelectSource })
-{
+function MessageBubble({ message, onSelectSource, isWelcome = false }) {
   const [copied, setCopied] = useState(false)
   const [reaction, setReaction] = useState("")
   const isAssistant = message.role === "assistant"
 
   const copyText = async () => {
-    try
-    {
+    try {
       await navigator.clipboard.writeText(message.text)
-    }
-    catch { }
-
+    } catch {}
     setCopied(true)
     window.setTimeout(() => setCopied(false), 1400)
   }
 
   return (
-    <article className={`message-row ${isAssistant ? "message-assistant" : "message-user"}`}>
-      { isAssistant && (
+    <article
+      className={`message-row ${isAssistant ? "message-assistant" : "message-user"}`}
+    >
+      {isAssistant && (
         <div className="avatar assistant-avatar">
           <LogoMark small />
         </div>
-      ) }
+      )}
       <div className="message-content">
         <div className="message-meta">
-          <strong>{ isAssistant ? "Docwise AI" : "Вы"}</strong>
-          <span>{ message.time }</span>
-          { isAssistant && ( 
-            <button 
+          <strong>{isAssistant ? "PSB AI" : "Вы"}</strong>
+          <span>{message.time}</span>
+          {isAssistant && (
+            <button
               className="source-count"
-              onClick={() => message.sources?.[0] && onSelectSource(message.sources[0])}
+              onClick={() =>
+                message.sources?.[0] && onSelectSource(message.sources[0])
+              }
             >
               <FileText size={13} />
-              Источники - { message.sources?.length ?? 0 }
+              Источники - {message.sources?.length ?? 0}
             </button>
-          ) }
+          )}
         </div>
-        <div className={`bubble ${isAssistant ? "assistant-bubble" : "user-bubble"}`}>
+        <div
+          className={`bubble ${isAssistant ? "assistant-bubble" : "user-bubble"}`}
+        >
           {isAssistant && (
             <span className="answer-status">
               <Check size={12} />
@@ -157,9 +89,9 @@ function MessageBubble({ message, onSelectSource })
           <p>{message.text}</p>
           {isAssistant && message.sources?.length > 0 && (
             <div className="inline-sources">
-              {message.sources.map((source) => (
+              {message.sources.map((source, i) => (
                 <button
-                  key={source.title}
+                  key={`${source.id || source.title}-${i}`}
                   className="inline-source"
                   onClick={() => onSelectSource(source)}
                 >
@@ -171,7 +103,7 @@ function MessageBubble({ message, onSelectSource })
             </div>
           )}
         </div>
-        {isAssistant && message.id !== "welcome" && (
+        {isAssistant && !isWelcome && (
           <div className="message-actions" aria-label="Действия с ответом">
             <button onClick={copyText} title="Скопировать">
               <Copy size={14} />
@@ -199,8 +131,7 @@ function MessageBubble({ message, onSelectSource })
   )
 }
 
-function PdfReader({ source, onClose }) 
-{
+function PdfReader({ source, onClose }) {
   const [numPages, setNumPages] = useState(0)
   const [pageNumber, setPageNumber] = useState(1)
   const [scale, setScale] = useState(1)
@@ -223,8 +154,7 @@ function PdfReader({ source, onClose })
       setContainerWidth(Math.max(100, Math.floor(entry.contentRect.width)))
     })
 
-    if (element) 
-      observer.observe(element)
+    if (element) observer.observe(element)
 
     return () => {
       observer.disconnect()
@@ -234,30 +164,22 @@ function PdfReader({ source, onClose })
   }, [])
 
   useEffect(() => {
-    bodyRef.current?.scrollTo({
-      top: 0,
-      left: 0,
-    })
-
+    bodyRef.current?.scrollTo({ top: 0, left: 0 })
     setPageError(false)
   }, [pageNumber])
 
   const handleLoadSuccess = ({ numPages: count }) => {
     setNumPages(count)
-
     const requestedPage = Number(source.page)
     const initialPage = Number.isInteger(requestedPage) ? requestedPage : 1
-
     setPageNumber(Math.min(Math.max(initialPage, 1), count))
   }
 
   const handleKeyDown = (event) => {
-    if (event.key === "Escape") 
-    {
+    if (event.key === "Escape") {
       onClose()
       return
     }
-
     if (event.key !== "Tab") return
 
     const controls = Array.from(
@@ -269,12 +191,10 @@ function PdfReader({ source, onClose })
     const first = controls[0]
     const last = controls[controls.length - 1]
 
-    if (event.shiftKey && document.activeElement === first) 
-    {
+    if (event.shiftKey && document.activeElement === first) {
       event.preventDefault()
       last?.focus()
-    } else if (!event.shiftKey && document.activeElement === last) 
-    {
+    } else if (!event.shiftKey && document.activeElement === last) {
       event.preventDefault()
       first?.focus()
     }
@@ -286,8 +206,7 @@ function PdfReader({ source, onClose })
     <div
       className="pdf-backdrop"
       onClick={(event) => {
-        if (event.target === event.currentTarget)
-          onClose()
+        if (event.target === event.currentTarget) onClose()
       }}
     >
       <section
@@ -324,7 +243,7 @@ function PdfReader({ source, onClose })
               <ChevronLeft size={18} />
             </button>
             <span className="pdf-page-label" aria-live="polite">
-              { numPages ? `${pageNumber} / ${numPages}` : "- / -" }
+              {numPages ? `${pageNumber} / ${numPages}` : "- / -"}
             </span>
             <button
               type="button"
@@ -356,7 +275,7 @@ function PdfReader({ source, onClose })
               title="Сбросить масштаб"
               onClick={() => setScale(1)}
             >
-              { Math.round(scale * 100) }%
+              {Math.round(scale * 100)}%
             </button>
             <button
               type="button"
@@ -389,19 +308,12 @@ function PdfReader({ source, onClose })
             error={
               <div className="pdf-status" role="alert">
                 <strong>Не удалось открыть PDF.</strong>
-                <p>
-                  Проверьте адрес документа и наличие файла
-                  в папке public/documents.
-                </p>
+                <p>Проверьте адрес документа.</p>
               </div>
             }
-            noData={
-              <p className="pdf-status">
-                Адрес документа не указан.
-              </p>
-            }
+            noData={<p className="pdf-status">Адрес документа не указан.</p>}
           >
-            { numPages > 0 && (
+            {numPages > 0 && (
               <Page
                 key={pageNumber}
                 pageNumber={pageNumber}
@@ -421,156 +333,213 @@ function PdfReader({ source, onClose })
                   </p>
                 }
               />
-            ) }
+            )}
           </Document>
-          { pageError && (
+          {pageError && (
             <p className="pdf-status" role="alert">
               Ошибка отрисовки. Попробуйте открыть другую страницу.
             </p>
-          ) }
+          )}
         </div>
-        { source.quote && (
+        {source.quote && (
           <footer className="pdf-reader-quote">
             <strong>Фрагмент, использованный в ответе</strong>
             <blockquote>{source.quote}</blockquote>
           </footer>
-        ) }
+        )}
       </section>
     </div>
   )
 }
 
-export default function App()
-{
-  const [chats, setChats] = useState(initialChats)
-  const [activeChat, setActiveChat] = useState("vacation")
-  const [conversations, setConversations] = useState({ vacation: [welcomeMessage] })
+export default function App() {
+  const [chats, setChats] = useState([])
+  const [activeChat, setActiveChat] = useState(null)
+  const [conversations, setConversations] = useState({})
   const [input, setInput] = useState("")
   const [search, setSearch] = useState("")
   const [selectedSource, setSelectedSource] = useState(null)
-  const [sourcesOpen, setSourcesOpen] = useState(true)
+  const [sourcesOpen] = useState(true)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [readerSource, setReaderSource] = useState(null)
   const [isTyping, setIsTyping] = useState(false)
+  const [bootError, setBootError] = useState("")
+  const [messageError, setMessageError] = useState("")
 
   const inputRef = useRef(null)
   const scrollRef = useRef(null)
 
-  const messages = conversations[activeChat] ?? [welcomeMessage]
-  const sources = useMemo(() => messages.flatMap((messages) => messages.sources ?? []), [messages])
-  const filteredChats = chats.filter((chat) => chat.title.toLowerCase().includes(search.toLowerCase()))
-  
-  const createChat = () => {
-    const id = `chat-${Date.now()}`
+  const messages = useMemo(
+    () => conversations[activeChat] ?? [],
+    [conversations, activeChat],
+  )
 
-    setChats((prev) => [
-      { id, title: "Новый диалог", date: "сейчас" },
-      ...prev
-    ])
+  const sources = useMemo(
+    () => messages.flatMap((m) => m.sources ?? []),
+    [messages],
+  )
 
-    setConversations((prev) => ({
-      ...prev,
-      [id]: [welcomeMessage]
-    }))
+  const filteredChats = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return q ? chats.filter((c) => c.title.toLowerCase().includes(q)) : chats
+  }, [chats, search])
 
-    setActiveChat(id)
-    setInput("")
-    setSidebarOpen(false)
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const list = await api.listChats()
+        if (cancelled) return
+        setChats(list)
+        if (list.length > 0) {
+          setActiveChat(list[0].id)
+        } else {
+          const chat = await api.createChat("Новый диалог")
+          if (cancelled) return
+          setChats([chat])
+          setActiveChat(chat.id)
+        }
+      } catch (e) {
+        if (!cancelled) setBootError(e.message || String(e))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
-    window.setTimeout(() => inputRef.current?.focus(), 60)
+  useEffect(() => {
+    if (!activeChat) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const list = await api.listMessages(activeChat)
+        if (cancelled) return
+        setConversations((prev) => ({ ...prev, [activeChat]: list }))
+      } catch (e) {
+        if (!cancelled) setMessageError(e.message || String(e))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [activeChat])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+  }, [messages.length, isTyping])
+
+  const createChat = async () => {
+    try {
+      setMessageError("")
+      const chat = await api.createChat("Новый диалог")
+      setChats((prev) => [chat, ...prev])
+      setActiveChat(chat.id)
+      setInput("")
+      setSidebarOpen(false)
+      window.setTimeout(() => inputRef.current?.focus(), 60)
+    } catch (e) {
+      setMessageError(e.message || String(e))
+    }
   }
 
-  const sendMessage = (event) => {
-    event?.preventDefault()
+  const deleteChat = async (chatId) => {
+    if (!window.confirm("Удалить этот диалог?")) return
+    try {
+      await api.deleteChat(chatId)
+      setChats((prev) => {
+        const next = prev.filter((c) => c.id !== chatId)
+        if (activeChat === chatId) setActiveChat(next[0]?.id ?? null)
+        return next
+      })
+    } catch (e) {
+      setMessageError(e.message || String(e))
+    }
+  }
 
+  const sendMessage = async (event) => {
+    event?.preventDefault?.()
     const text = input.trim()
-    if (!text || isTyping)
-      return
+    if (!text || isTyping || !activeChat) return
+    const chatId = activeChat
+    setInput("")
+    setMessageError("")
+    setIsTyping(true)
 
-    const time = new Intl.DateTimeFormat("ru-RU", {
-      hour: "2-digit", 
-      minute: "2-digit"
-    }).format(new Date())
+    const nowTime = new Date().toLocaleTimeString("ru-RU", {
+      hour: "2-digit",
+      minute: "2-digit",
+    })
 
-    const userMessage = {
-      id: `user-${Date.now()}`,
+    const optimistic = {
+      id: `optimistic-${Date.now()}`,
       role: "user",
-      time, 
-      text
+      time: nowTime,
+      text,
+      sources: [],
     }
 
     setConversations((prev) => ({
       ...prev,
-      [activeChat]: [...(prev[activeChat] ?? [welcomeMessage]), userMessage]
+      [chatId]: [...(prev[chatId] ?? []), optimistic],
     }))
 
     setChats((prev) =>
-      prev.map((chat) =>
-        chat.id === activeChat && chat.title === "Новый диалог"
+      prev.map((c) =>
+        c.id === chatId && c.title === "Новый диалог"
           ? {
-              ...chat,
-              title: text.length > 30 ? `${text.slice(0, 30)}...` : text,
+              ...c,
+              title: text.length > 30 ? `${text.slice(0, 30)}…` : text,
               date: "сейчас",
             }
-          : chat
-      )
+          : c,
+      ),
     )
 
-    setInput("")
-    setIsTyping(true)
-
-    window.setTimeout(() => {
-      const reply = {
-        id: `reply-${Date.now()}`,
-        role: "assistant",
-        time,
-        ...demoAnswer
-      }
-
+    try {
+      const reply = await api.sendMessage(chatId, text)
       setConversations((prev) => ({
         ...prev,
-        [activeChat]: [...(prev[activeChat] ?? [welcomeMessage]), reply],
+        [chatId]: [...(prev[chatId] ?? []), reply],
       }))
-
+    } catch (e) {
+      setMessageError(e.message || String(e))
+    } finally {
       setIsTyping(false)
-
-      window.setTimeout(() => {
-        scrollRef.current?.scrollTo({
-          top: scrollRef.current.scrollHeight,
-          behavior: "smooth"
-        })
-      }, 60)
-    }, 900)
+    }
   }
 
   const activateChat = (id) => {
     setActiveChat(id)
     setSidebarOpen(false)
     setSelectedSource(null)
-  
-    if (!conversations[id]) 
-    {
-      setConversations((prev) => ({
-        ...prev,
-        [id]: [welcomeMessage],
-      }))
-    }
+    setReaderSource(null)
+    setMessageError("")
   }
 
   return (
     <main className="workspace">
-      { sidebarOpen && (
+      {bootError && (
+        <div className="error-banner" role="alert">
+          Ошибка загрузки: {bootError}
+        </div>
+      )}
+
+      {sidebarOpen && (
         <button
           className="mobile-scrim"
           aria-label="Закрыть меню"
           onClick={() => setSidebarOpen(false)}
         />
-      ) }
+      )}
+
       <aside className={`sidebar panel ${sidebarOpen ? "sidebar-open" : ""}`}>
         <div className="brand-lockup">
           <LogoMark />
           <div>
-            <strong>DOCWISE</strong>
+            <strong>PSB</strong>
             <span>AI ASSISTANT</span>
           </div>
           <button
@@ -581,53 +550,81 @@ export default function App()
             <X size={18} />
           </button>
         </div>
+
         <button className="new-chat-button" onClick={createChat}>
           <Plus size={18} strokeWidth={2.2} />
           <span>Новый чат</span>
-          <kbd><Command size={10} /> K</kbd>
+          <kbd>
+            <Command size={10} /> K
+          </kbd>
         </button>
+
         <div className="history-heading">
           <span>История диалогов</span>
-          <span className="count-pill">{ chats.length }</span>
+          <span className="count-pill">{chats.length}</span>
         </div>
+
         <label className="chat-search">
           <Search size={14} />
           <input
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(e) => setSearch(e.target.value)}
             placeholder="Найти диалог"
           />
         </label>
+
         <nav className="chat-list" aria-label="История диалогов">
-          { filteredChats.map((chat) => (
-            <button
-              key={chat.id}
-              onClick={() => activateChat(chat.id)}
-              className={`chat-item ${activeChat === chat.id ? "active" : ""}`}
-            >
-              <MessageCircle size={16} />
-              <span className="chat-title">{chat.title}</span>
-              <time>{chat.date}</time>
-            </button>
-          )) }
-          { filteredChats.length === 0 && (
+          {filteredChats.map((chat) => (
+            <div key={chat.id} className="chat-item-row">
+              <button
+                className={`chat-item ${activeChat === chat.id ? "active" : ""}`}
+                onClick={() => activateChat(chat.id)}
+              >
+                <MessageCircle size={16} />
+                <span className="chat-title">{chat.title}</span>
+                <time>{chat.date}</time>
+              </button>
+              <button
+                className="chat-delete"
+                title="Удалить чат"
+                aria-label="Удалить чат"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  deleteChat(chat.id)
+                }}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+          {filteredChats.length === 0 && (
             <p className="empty-search">Диалоги не найдены</p>
-          ) }
+          )}
         </nav>
       </aside>
+
       <section className="main-column">
         <section className="chat-panel panel">
+          {messageError && (
+            <div className="error-banner" role="alert">
+              {messageError}
+            </div>
+          )}
+
           <div className="conversation" ref={scrollRef}>
-            { messages.map((message) => (
+            {messages.map((message, index) => (
               <MessageBubble
                 key={message.id}
                 message={message}
+                isWelcome={index === 0 && message.role === "assistant"}
                 onSelectSource={setSelectedSource}
               />
-            )) }
-            { isTyping && (
+            ))}
+            {isTyping && (
               <div className="typing-row">
-                <div className="avatar assistant-avatar"><LogoMark small /></div>
+                <div className="avatar assistant-avatar">
+                  <LogoMark small />
+                </div>
                 <div className="typing-bubble">
                   <span />
                   <span />
@@ -635,33 +632,40 @@ export default function App()
                   <small>Ассистент готовит ответ</small>
                 </div>
               </div>
-            ) }
+            )}
           </div>
+
           <div className="composer-area">
-            { messages.length === 1 && (
+            {messages.length <= 1 && (
               <div className="suggestions">
                 <span>Попробуйте спросить</span>
-                <button onClick={() => setInput("Какие документы нужны для оформления отпуска?")}>
+                <button
+                  onClick={() =>
+                    setInput("Какие документы нужны для оформления отпуска?")
+                  }
+                >
                   Оформление отпуска
                 </button>
-                <button onClick={() => setInput("На что обратить внимание в договоре?")}>
+                <button
+                  onClick={() => setInput("На что обратить внимание в договоре?")}
+                >
                   Проверка договора
-                </button>  
+                </button>
               </div>
-            ) }
+            )}
+
             <form className="composer" onSubmit={sendMessage}>
               <textarea
                 ref={inputRef}
                 value={input}
-                onChange={(event) => setInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) 
-                  {
-                    event.preventDefault()
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault()
                     sendMessage()
                   }
                 }}
-                placeholder="Задайте вопрос по документам…"
+                placeholder="Задайте вопрос по документам..."
                 rows={1}
               />
               <button
@@ -676,35 +680,47 @@ export default function App()
           </div>
         </section>
       </section>
-      { sourcesOpen && (
+
+      {sourcesOpen && (
         <aside className="sources-panel panel">
           <div className="sources-heading">
             <div>
               <h2>Источники ответа</h2>
             </div>
-            <span className="source-total">{String(sources.length).padStart(2, "0")}</span>
+            <span className="source-total">
+              {String(sources.length).padStart(2, "0")}
+            </span>
           </div>
-          { selectedSource ? (
+
+          {selectedSource ? (
             <div className="source-detail">
-              <button className="source-back" onClick={() => setSelectedSource(null)}>
+              <button
+                className="source-back"
+                onClick={() => setSelectedSource(null)}
+              >
                 Все источники
               </button>
-              <div className="source-file-icon"><FileText size={23} /></div>
+              <div className="source-file-icon">
+                <FileText size={23} />
+              </div>
               <span className="source-type">Источник ответа</span>
               <h3>{selectedSource.title}</h3>
               <div className="source-detail-row">
                 <span>Раздел</span>
-                <strong>{selectedSource.section}</strong>
+                <strong>{selectedSource.section || "—"}</strong>
               </div>
               <div className="source-detail-row">
                 <span>Расположение</span>
-                <strong>{selectedSource.page}</strong>
+                <strong>
+                  {selectedSource.page ??
+                    selectedSource.location ??
+                    "—"}
+                </strong>
               </div>
               <button
                 type="button"
                 className="open-document"
                 disabled={!selectedSource.pdfUrl}
-                title={selectedSource.pdfUrl ? "Открыть PDF внутри приложения" : "PDF-версия документа пока недоступна"}
                 onClick={() => setReaderSource(selectedSource)}
               >
                 Открыть документ
@@ -713,40 +729,55 @@ export default function App()
             </div>
           ) : sources.length ? (
             <div className="source-list">
-              { sources.map((source, index) => (
+              {sources.map((source, index) => (
                 <button
-                key={`${source.title}-${index}`}
-                className="source-card"
-                onClick={() => setSelectedSource(source)}
-              >
-                <div className="source-card-icon"><FileText size={17} /></div>
-                <div>
-                  <strong>{source.title}</strong>
-                  <span>{source.section} * {source.page}</span>
-                </div>
-                <ArrowUpRight size={14} />
-              </button>
-              )) }
+                  key={`${source.id || source.title}-${index}`}
+                  className="source-card"
+                  onClick={() => setSelectedSource(source)}
+                >
+                  <div className="source-card-icon">
+                    <FileText size={17} />
+                  </div>
+                  <div>
+                    <strong>{source.title}</strong>
+                    <span>
+                      {source.section || "—"}
+                      {source.page ? ` · ${source.page}` : ""}
+                    </span>
+                  </div>
+                  <ArrowUpRight size={14} />
+                </button>
+              ))}
             </div>
           ) : (
             <div className="sources-empty">
-              <div className="empty-file-icon"><FileText size={24} /></div>
+              <div className="empty-file-icon">
+                <FileText size={24} />
+              </div>
               <strong>Пока нет источников</strong>
               <p>
-                После ответа ассистента здесь появятся документы, пункты и цитаты,
-                на которых основан вывод.
+                После ответа ассистента здесь появятся документы, пункты и
+                цитаты, на которых основан вывод.
               </p>
             </div>
-          ) }
+          )}
         </aside>
-      ) }
-      { readerSource && (
-        <PdfReader
-          key={`${readerSource.id ?? readerSource.title}:${readerSource.pdfUrl}`}
-          source={readerSource}
-          onClose={() => setReaderSource(null)}
-        />
-      ) }
+      )}
+
+      {readerSource &&
+        (readerSource.pdfUrl?.toLowerCase().endsWith(".pdf") ? (
+          <PdfReader
+            key={`pdf-${readerSource.id}`}
+            source={readerSource}
+            onClose={() => setReaderSource(null)}
+          />
+        ) : (
+          <TextReader
+            key={`text-${readerSource.id}`}
+            source={readerSource}
+            onClose={() => setReaderSource(null)}
+          />
+        ))}
     </main>
   )
 }
