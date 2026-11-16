@@ -1,0 +1,10 @@
+**/.env
+scripts/seaweedfs/s3-config.json
+__pycache__/
+*.py[cod]
+*.so
+.idea/
+.vscode/
+**/.venv/
+.pytest_cache/
+data/
