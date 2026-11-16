@@ -52,7 +52,7 @@ flowchart LR
     BE --> LLM["LLM SERVICE<br>FastAPI · /answer<br><i>RAG, источники, ответы / отказы</i>"]
     LLM --> ME["MODEL ENDPOINT<br>OpenAI-compatible API<br><i>LLM + embeddings + reranker</i>"]
     BE -- SQLAlchemy --> DB[("ХРАНЕНИЕ МЕТАДАННЫХ<br>SQLite по умолчанию<br><i>SQLAlchemy: чаты, сообщения, документы</i>")]
-    BE -. Filer HTTP API<br>(интеграция не завершена) .-> FS[("ФАЙЛОВОЕ ХРАНИЛИЩЕ<br>SeaweedFS<br><i>Адаптер Filer HTTP есть, endpoint пока локальный</i>")]
+    BE -. Filer HTTP API<br> .-> FS[("ФАЙЛОВОЕ ХРАНИЛИЩЕ<br>SeaweedFS<br><i>Адаптер Filer HTTP есть, endpoint пока локальный</i>")]
     LLM -. "Retrieval<br>" .-> KB[("БАЗА ЗНАНИЙ<br>knowledge-base.zip<br><i>BM25 + dense-векторы</i>")]
     ME -. embeddings .-> KB
 ```
