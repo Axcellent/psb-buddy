@@ -6,7 +6,8 @@
 ## Содержание
 - [Команда](#команда)
 - [Возможности и состав проекта](#возможности-и-состав-проекта)
--[Технологический стек](#технологический-стек)
+- [Технологический стек](#технологический-стек)
+- [Архитектура](#архитектура)
 - [Настройка окружения](#настройка-окружения)
 - [Запуск](#запуск)
 - [API](#api)
@@ -18,11 +19,11 @@
 ## Команда
 |Участник|Роль|
 |---|---|
-|[Гредасов Илья]()|ML|
-|[Макаренко Эвелина]()|ML|
-|[Егорцев Максим]()|frontend|
-|[Сазоненко Дмитрий]()|backend|
-|[Митерева Критина]()|backend|
+|[Гредасов Илья](https://github.com/IlyaGredasov)|ML|
+|[Макаренко Эвелина](https://github.com/MakarenkoEP)|ML|
+|[Егорцев Максим](https://github.com/vulkan790)|frontend|
+|[Сазоненко Дмитрий](https://github.com/Axcellent)|backend|
+|[Митерева Критина](https://github.com/Rinalon)|backend|
 
 ## Возможности и состав проекта
 
@@ -41,8 +42,20 @@
 | Работа с данными | SQLAlchemy Async, SQLite по умолчанию |
 | LLM service | FastAPI, HTTPX, OpenAI-compatible API |
 | Retrieval | BM25, embeddings, NumPy, опциональный reranker |
-| Файловое хранилище | SeaweedFS (Filer HTTP API) |
+| Файловое хранилище | SeaweedFS |
 | Запуск инфраструктуры | Docker Compose |
+
+## Архитектура
+```mermaid
+flowchart LR
+    FE["WEB / FRONTEND<br>React 19 + Vite<br><i>Чат, история, PDF viewer</i>"] --> BE["API / BACKEND<br>FastAPI<br><i>Чаты, сообщения, документы</i>"]
+    BE --> LLM["LLM SERVICE<br>FastAPI · /answer<br><i>RAG, источники, ответы / отказы</i>"]
+    LLM --> ME["MODEL ENDPOINT<br>OpenAI-compatible API<br><i>LLM + embeddings + reranker</i>"]
+    BE -- SQLAlchemy --> DB[("ХРАНЕНИЕ МЕТАДАННЫХ<br>SQLite по умолчанию<br><i>SQLAlchemy: чаты, сообщения, документы</i>")]
+    BE -. Filer HTTP API<br>(интеграция не завершена) .-> FS[("ФАЙЛОВОЕ ХРАНИЛИЩЕ<br>SeaweedFS<br><i>Адаптер Filer HTTP есть, endpoint пока локальный</i>")]
+    LLM -. "Retrieval<br>" .-> KB[("БАЗА ЗНАНИЙ<br>knowledge-base.zip<br><i>BM25 + dense-векторы</i>")]
+    ME -. embeddings .-> KB
+```
 
 ## Настройка окружения
 
