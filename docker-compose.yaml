@@ -19,15 +19,23 @@ services:
       context: ./llm
     env_file:
       - .env
+    environment:
+      DATA_DIR: /data
+      EMB_MODEL: ${EMB_MODEL:-baai/bge-m3}
+      RERANKER_MODEL: ${RERANKER_MODEL:-qwen3-reranker-8b}
+      USE_RERANKER: ${USE_RERANKER:-1}
     ports:
       - "127.0.0.1:8001:8000"
+    volumes:
+      - ./data:/data:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import json, urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/kb', timeout=2))['loaded']; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)"]
       interval: 15s
-      timeout: 3s
+      timeout: 8s
       retries: 3
+      start_period: 120s
 
 volumes:
   seaweedfs-data:

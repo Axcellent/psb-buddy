@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from contextlib import asynccontextmanager
+import re
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -74,11 +75,16 @@ class ChatResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from rag_service import RagService
+
     app.state.client = httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0))
     app.state.semaphore = asyncio.Semaphore(settings.max_workers)
+    app.state.rag = RagService()
+    await asyncio.to_thread(app.state.rag.load)
     try:
         yield
     finally:
+        await asyncio.to_thread(app.state.rag.close)
         await app.state.client.aclose()
 
 
@@ -101,6 +107,96 @@ def upstream_payload(request: ChatRequest, *, stream: bool) -> dict[str, Any]:
 
 def upstream_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
+
+
+MAX_ATTEMPTS = 3
+RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+RETRY_BASE_DELAY = 1.0
+RETRY_MAX_DELAY = 8.0
+
+
+def retry_delay(attempt: int, response: httpx.Response | None = None) -> float:
+    if response is not None:
+        try:
+            retry_after = float(response.headers.get("retry-after", ""))
+            return min(RETRY_MAX_DELAY, max(0.0, retry_after))
+        except ValueError:
+            pass
+    return min(RETRY_MAX_DELAY, RETRY_BASE_DELAY * 2**attempt)
+
+
+async def send_chat_completion(
+    payload: dict[str, Any], *, stream: bool
+) -> httpx.Response:
+    """POST /chat/completions, retrying transient failures a bounded number of times.
+
+    The caller must check the status of the returned response and, when
+    ``stream`` is true, close it.
+    """
+    client: httpx.AsyncClient = app.state.client
+    for attempt in range(MAX_ATTEMPTS):
+        is_last = attempt == MAX_ATTEMPTS - 1
+        request = client.build_request(
+            "POST",
+            f"{settings.base_url}/chat/completions",
+            headers=upstream_headers(),
+            json=payload,
+        )
+        try:
+            response = await client.send(request, stream=stream)
+        except httpx.ReadTimeout:
+            raise
+        except httpx.TransportError:
+            if is_last:
+                raise
+            await asyncio.sleep(retry_delay(attempt))
+            continue
+        if response.status_code in RETRY_STATUSES and not is_last:
+            delay = retry_delay(attempt, response)
+            await response.aclose()
+            await asyncio.sleep(delay)
+            continue
+        return response
+    raise AssertionError("unreachable")
+
+
+EMPTY_ANSWER_ATTEMPTS = 2
+MAX_TOKENS_GROWTH_LIMIT = 8192
+THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+class EmptyAnswerError(ValueError):
+    """The model replied successfully but produced no answer text."""
+
+    def __init__(self, finish_reason: str | None, *, has_reasoning: bool) -> None:
+        if has_reasoning:
+            detail = "Model spent its output on reasoning and returned no answer"
+        else:
+            detail = "Model returned an empty answer"
+        super().__init__(f"{detail} (finish_reason={finish_reason or 'unknown'})")
+
+
+class StreamInterruptedError(ValueError):
+    """The model stream failed or stopped before the answer was complete."""
+
+
+def extract_answer(message: dict[str, Any]) -> str:
+    """Return the answer text of a chat message, or "" when there is none."""
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    if not isinstance(content, str):
+        return ""
+    return THINK_BLOCK.sub("", content).strip()
+
+
+def grown_max_tokens(current: int) -> int:
+    doubled = current * 2
+    return doubled if doubled <= MAX_TOKENS_GROWTH_LIMIT else current
 
 
 @app.get("/health")
@@ -127,27 +223,95 @@ async def ready() -> dict[str, str]:
     return {"status": "ready", "model": settings.model}
 
 
+class HistoryMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    role: Literal["user", "assistant"]
+    content: str = ""
+
+
+class AnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    question: str = Field(min_length=1)
+    history: list[HistoryMessage] = Field(default_factory=list)
+
+
+class SourceChunk(BaseModel):
+    id: str
+    page: int | None = None
+    text: str
+
+
+class AnswerSource(BaseModel):
+    doc_id: str
+    chunk_id: str
+    location: str | None = None
+    section: str | None = None
+    page: int | None = None
+    quote: str | None = None
+    chunks: list[SourceChunk] = Field(default_factory=list)
+
+
+class AnswerResponse(BaseModel):
+    text: str
+    sources: list[AnswerSource] = Field(default_factory=list)
+    mode: str = "model"
+
+
+@app.get("/kb")
+async def knowledge_base() -> dict[str, Any]:
+    return app.state.rag.status()
+
+
+@app.post("/answer", response_model=AnswerResponse)
+async def answer(request: AnswerRequest) -> AnswerResponse:
+    rag = app.state.rag
+    if not rag.ready:
+        raise HTTPException(status_code=503, detail=rag.error)
+    if not request.question.strip():
+        raise HTTPException(status_code=422, detail="Question is empty")
+    history = [message.model_dump() for message in request.history]
+    async with app.state.semaphore:
+        try:
+            result = await asyncio.to_thread(rag.answer, request.question, history)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Assistant failed to answer") from exc
+    return AnswerResponse(**result)
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     async with app.state.semaphore:
         try:
-            response = await app.state.client.post(
-                f"{settings.base_url}/chat/completions",
-                headers=upstream_headers(),
-                json=upstream_payload(request, stream=False),
+            payload = upstream_payload(request, stream=False)
+            for _ in range(EMPTY_ANSWER_ATTEMPTS):
+                response = await send_chat_completion(payload, stream=False)
+                response.raise_for_status()
+                body = response.json()
+                choice = body["choices"][0]
+                message = choice["message"]
+                finish_reason = choice.get("finish_reason")
+                answer = extract_answer(message)
+                if answer:
+                    return ChatResponse(
+                        answer=answer,
+                        model=body.get("model", settings.model),
+                        finish_reason=finish_reason,
+                        usage=body.get("usage"),
+                    )
+                if finish_reason == "content_filter":
+                    break
+                if finish_reason == "length":
+                    payload = {
+                        **payload,
+                        "max_tokens": grown_max_tokens(payload["max_tokens"]),
+                    }
+            raise EmptyAnswerError(
+                finish_reason, has_reasoning=bool(message.get("reasoning_content"))
             )
-            response.raise_for_status()
-            body = response.json()
-            choice = body["choices"][0]
-            answer = choice["message"]["content"]
-            if not isinstance(answer, str) or not answer.strip():
-                raise ValueError("Empty model answer")
-            return ChatResponse(
-                answer=answer,
-                model=body.get("model", settings.model),
-                finish_reason=choice.get("finish_reason"),
-                usage=body.get("usage"),
-            )
+        except EmptyAnswerError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         except httpx.TimeoutException as exc:
             raise HTTPException(
                 status_code=504, detail="Model request timed out"
@@ -163,7 +327,7 @@ async def chat_ws(websocket: WebSocket) -> None:
         request = ChatRequest.model_validate(await websocket.receive_json())
     except WebSocketDisconnect:
         return
-    except ValidationError, ValueError, TypeError:
+    except (ValidationError, ValueError, TypeError):
         await websocket.send_json({"type": "error", "message": "Invalid chat request"})
         await websocket.close(code=1008)
         return
@@ -171,43 +335,56 @@ async def chat_ws(websocket: WebSocket) -> None:
     try:
         async with (
             app.state.semaphore,
-            app.state.client.stream(
-                "POST",
-                f"{settings.base_url}/chat/completions",
-                headers=upstream_headers(),
-                json=upstream_payload(request, stream=True),
+            aclosing(
+                await send_chat_completion(
+                    upstream_payload(request, stream=True), stream=True
+                )
             ) as response,
         ):
             response.raise_for_status()
             await websocket.send_json({"type": "start", "model": settings.model})
             finish_reason = None
             received_content = False
+            received_reasoning = False
+            received_done = False
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
+                    received_done = True
                     break
                 if not data:
                     continue
                 chunk = json.loads(data)
+                if chunk.get("error"):
+                    raise StreamInterruptedError(
+                        "Model reported an error during streaming"
+                    )
                 for choice in chunk.get("choices", []):
                     delta = choice.get("delta", {})
                     content = delta.get("content")
                     if isinstance(content, str) and content:
                         received_content = True
                         await websocket.send_json({"type": "delta", "content": content})
+                    if delta.get("reasoning_content"):
+                        received_reasoning = True
                     finish_reason = choice.get("finish_reason") or finish_reason
             if not received_content:
-                raise ValueError("Empty model stream")
+                raise EmptyAnswerError(finish_reason, has_reasoning=received_reasoning)
+            if not received_done and finish_reason is None:
+                raise StreamInterruptedError("Model stream ended before completion")
             await websocket.send_json({"type": "done", "finish_reason": finish_reason})
     except WebSocketDisconnect:
         return
+    except (EmptyAnswerError, StreamInterruptedError) as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close(code=1011)
     except httpx.TimeoutException:
         await websocket.send_json(
             {"type": "error", "message": "Model request timed out"}
         )
         await websocket.close(code=1011)
-    except httpx.HTTPError, ValueError, KeyError, TypeError, IndexError:
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError):
         await websocket.send_json({"type": "error", "message": "Model request failed"})
         await websocket.close(code=1011)
